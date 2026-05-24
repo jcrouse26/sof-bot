@@ -157,21 +157,6 @@ app.post("/chat", async (req, res) => {
     return res.status(500).json({ error: "Bot failed" });
   }
 
-  if (!inScope) {
-    const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
-    await sendSlackAlert(contactInfo, message);
-    return res.json({ reply: null, outOfScope: true });
-  }
-
-  conversation.push({ role: "user", content: message });
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-5",
-    max_tokens: 1000,
-    system: SYSTEM_PROMPT,
-    messages: conversation.slice(-20),
-  });
-  const reply = response.content[0].text;
-
   // Safety net: if the main bot still returns OUTOFSCOPE, treat it the same way
   if (reply.trim() === "OUTOFSCOPE") {
     const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
