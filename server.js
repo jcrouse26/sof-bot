@@ -121,7 +121,9 @@ async function sendSlackAlert(contactInfo, message) {
 app.post("/chat", async (req, res) => {
   console.log("Incoming GHL payload:", JSON.stringify(req.body, null, 2));
 
-  const { contactId, contactName, contactPhone } = req.body;
+  const contactId = req.body.customData?.contactId || req.body.contact_id;
+  const contactName = req.body.customData?.contactName || req.body.full_name;
+  const contactPhone = req.body.customData?.contactPhone || req.body.phone;
 
   // GHL sends message as an object { type, body } — extract the text correctly
   const rawMessage = req.body.message;
