@@ -119,10 +119,43 @@ async function sendSlackAlert(contactInfo, message) {
 }
 
 app.post("/chat", async (req, res) => {
-  const { message, contactId, contactName, contactPhone } = req.body;
-  if (!message) return res.status(400).json({ error: "No message" });
+  console.log("Incoming GHL payload:", JSON.stringify(req.body, null, 2));
 
-  const inScope = await isInScope(message);
+  const { message, contactId, contactName, contactPhone } = req.body;
+
+  // Ensure message is a plain string
+  const messageText = typeof message === "string" ? message.trim() : String(message || "").trim();
+  if (!messageText) return res.status(400).json({ error: "No message" });
+
+  let inScope;
+  try {
+    inScope = await isInScope(messageText);
+  } catch (err) {
+    console.error("Triage error:", err);
+    return res.status(500).json({ error: "Triage failed" });
+  }
+
+  if (!inScope) {
+    const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
+    await sendSlackAlert(contactInfo, messageText);
+    return res.json({ reply: null, outOfScope: true });
+  }
+
+  let reply;
+  try {
+    conversation.push({ role: "user", content: messageText });
+    const response = await anthropic.messages.create({
+      model: "claude-sonnet-4-5",
+      max_tokens: 1000,
+      system: SYSTEM_PROMPT,
+      messages: conversation.slice(-20),
+    });
+    reply = response.content[0].text;
+  } catch (err) {
+    console.error("Claude error:", err);
+    conversation.pop();
+    return res.status(500).json({ error: "Bot failed" });
+  }
 
   if (!inScope) {
     const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
@@ -142,7 +175,8 @@ app.post("/chat", async (req, res) => {
   // Safety net: if the main bot still returns OUTOFSCOPE, treat it the same way
   if (reply.trim() === "OUTOFSCOPE") {
     const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
-    await sendSlackAlert(contactInfo, message);
+    await sendSlackAlert(contactInfo, messageText);
+    conversation.pop();
     return res.json({ reply: null, outOfScope: true });
   }
 
@@ -150,7 +184,11 @@ app.post("/chat", async (req, res) => {
 
   // Send the reply directly via GHL if we have a contactId
   if (contactId) {
-    await sendGHLReply(contactId, reply);
+    try {
+      await sendGHLReply(contactId, reply);
+    } catch (err) {
+      console.error("GHL send error:", err);
+    }
     return res.json({ reply, outOfScope: false, sent: true });
   }
 
