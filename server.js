@@ -9,6 +9,9 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const SLACK_TOKEN = process.env.SLACK_BOT_TOKEN;
 const SLACK_ALERT_CHANNEL = "C0B5E3MBXST";
 
+const GHL_API_KEY = process.env.GHL_API_KEY;
+const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
+
 let conversation = [];
 
 const SYSTEM_PROMPT = `You are a helpful assistant for Saints of Flow, Jason Crouse's coaching brand. You are texting with someone who has already registered for the Big Three Mastery Workshop. Your job is to answer their questions in a warm, conversational, human way — like a real person on the team, not a bot.
@@ -83,6 +86,22 @@ async function isInScope(message) {
   return result === "INSCOPE";
 }
 
+async function sendGHLReply(contactId, message) {
+  await fetch("https://services.leadconnectorhq.com/conversations/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${GHL_API_KEY}`,
+      "Version": "2021-04-15",
+    },
+    body: JSON.stringify({
+      type: "SMS",
+      contactId: contactId,
+      message: message,
+    }),
+  });
+}
+
 async function sendSlackAlert(contactInfo, message) {
   const alertText = `🚨 *Bot handoff needed*\n*Contact:* ${contactInfo}\n*Their message:* "${message}"\n\nThis was outside the bot's scope — please follow up manually.`;
 
@@ -128,6 +147,13 @@ app.post("/chat", async (req, res) => {
   }
 
   conversation.push({ role: "assistant", content: reply });
+
+  // Send the reply directly via GHL if we have a contactId
+  if (contactId) {
+    await sendGHLReply(contactId, reply);
+    return res.json({ reply, outOfScope: false, sent: true });
+  }
+
   res.json({ reply, outOfScope: false });
 });
 
