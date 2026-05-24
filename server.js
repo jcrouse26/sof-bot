@@ -121,11 +121,15 @@ async function sendSlackAlert(contactInfo, message) {
 app.post("/chat", async (req, res) => {
   console.log("Incoming GHL payload:", JSON.stringify(req.body, null, 2));
 
-  const { message, contactId, contactName, contactPhone } = req.body;
+  const { contactId, contactName, contactPhone } = req.body;
 
-  // Ensure message is a plain string
-  const messageText = typeof message === "string" ? message.trim() : String(message || "").trim();
-  if (!messageText) return res.status(400).json({ error: "No message" });
+  // GHL sends message as an object { type, body } — extract the text correctly
+  const rawMessage = req.body.message;
+  const messageText = (typeof rawMessage === "object" ? rawMessage?.body : rawMessage) || req.body.customData?.message || "";
+  if (!messageText.trim()) return res.status(400).json({ error: "No message" });
+
+  console.log("Message text:", messageText);
+  console.log("Contact ID:", contactId);
 
   let inScope;
   try {
