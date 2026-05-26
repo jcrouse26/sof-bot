@@ -12,7 +12,8 @@ const SLACK_ALERT_CHANNEL = "C0B5E3MBXST";
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 
-let conversation = [];
+// Per-contact conversation memory
+const conversations = new Map();
 
 const SYSTEM_PROMPT = `You are a helpful assistant for Saints of Flow, Jason Crouse's coaching brand. You are texting with someone who has already registered for the Big Three Mastery Workshop. Your job is to answer their questions in a warm, conversational, human way like a real person on the team, not a bot.
 
@@ -75,23 +76,43 @@ CRITICAL RULE: If a message is out of scope or you are unsure how to answer it, 
 
 remember: everyone texting has already registered, they are warm, be helpful, be human, be brief.`;
 
-const TRIAGE_PROMPT = `You are a triage assistant. Your only job is to decide if a message is in scope for a workshop logistics bot.
+const TRIAGE_PROMPT = `You are a triage assistant. Your only job is to classify an inbound text message for a workshop logistics bot.
 
 IN SCOPE: questions about workshop date, time, length, platform, Zoom link, replay, confirmation email, what the workshop covers, bringing a friend, what to prepare.
 
+SOCIAL: casual acknowledgments with no real question — things like "thanks", "ok", "sounds good", "got it", "👍", "great", "awesome", "perfect", or similar short responses.
+
 OUT OF SCOPE: anything about coaching programs, pricing, personal advice, or anything unrelated to basic workshop logistics.
 
-Reply with exactly one word: INSCOPE or OUTOFSCOPE`;
+Reply with exactly one word: INSCOPE, SOCIAL, or OUTOFSCOPE`;
 
-async function isInScope(message) {
+async function triage(message) {
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-5",
     max_tokens: 10,
     system: TRIAGE_PROMPT,
     messages: [{ role: "user", content: message }],
   });
-  const result = response.content[0].text.trim();
-  return result === "INSCOPE";
+  return response.content[0].text.trim();
+}
+
+async function hasHumanActiveTag(contactId) {
+  if (!contactId || !GHL_API_KEY) return false;
+  try {
+    const res = await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}`, {
+      headers: {
+        "Authorization": `Bearer ${GHL_API_KEY}`,
+        "Version": "2021-04-15",
+      },
+    });
+    const data = await res.json();
+    const tags = data?.contact?.tags || [];
+    console.log("Contact tags:", tags);
+    return tags.includes("human-active");
+  } catch (err) {
+    console.error("GHL tag check error:", err);
+    return false; // fail open — let bot respond if we can't check
+  }
 }
 
 async function sendGHLReply(contactId, message) {
@@ -112,18 +133,23 @@ async function sendGHLReply(contactId, message) {
 
 async function sendSlackAlert(contactInfo, message) {
   const alertText = `🚨 *Bot handoff needed*\n*Contact:* ${contactInfo}\n*Their message:* "${message}"\n\nThis was outside the bot's scope — please follow up manually.`;
-
-  await fetch("https://slack.com/api/chat.postMessage", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${SLACK_TOKEN}`,
-    },
-    body: JSON.stringify({
-      channel: SLACK_ALERT_CHANNEL,
-      text: alertText,
-    }),
-  });
+  try {
+    const res = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${SLACK_TOKEN}`,
+      },
+      body: JSON.stringify({
+        channel: SLACK_ALERT_CHANNEL,
+        text: alertText,
+      }),
+    });
+    const data = await res.json();
+    console.log("Slack response:", JSON.stringify(data));
+  } catch (err) {
+    console.error("Slack alert error:", err);
+  }
 }
 
 app.post("/chat", async (req, res) => {
@@ -141,19 +167,36 @@ app.post("/chat", async (req, res) => {
   console.log("Message text:", messageText);
   console.log("Contact ID:", contactId);
 
-  let inScope;
+  // Check if a human has taken over — if so, stand down silently
+  const humanActive = await hasHumanActiveTag(contactId);
+  if (humanActive) {
+    console.log("human-active tag found, bot standing down");
+    return res.json({ reply: null, humanActive: true });
+  }
+
+  // Triage the message
+  let triageResult;
   try {
-    inScope = await isInScope(messageText);
+    triageResult = await triage(messageText);
   } catch (err) {
     console.error("Triage error:", err);
     return res.status(500).json({ error: "Triage failed" });
   }
 
-  if (!inScope) {
+  console.log("Triage result:", triageResult);
+
+  if (triageResult === "OUTOFSCOPE") {
     const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
     await sendSlackAlert(contactInfo, messageText);
     return res.json({ reply: null, outOfScope: true });
   }
+
+  // Get or create per-contact conversation history
+  const conversationKey = contactId || "local-test";
+  if (!conversations.has(conversationKey)) {
+    conversations.set(conversationKey, []);
+  }
+  const conversation = conversations.get(conversationKey);
 
   let reply;
   try {
@@ -195,7 +238,7 @@ app.post("/chat", async (req, res) => {
 });
 
 app.post("/reset", (req, res) => {
-  conversation = [];
+  conversations.clear();
   res.json({ ok: true });
 });
 
@@ -330,7 +373,9 @@ async function sendMessage(){
     const res=await fetch("/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:text,contactName:"Test User",contactPhone:"+1 (555) 000-0000"})});
     const data=await res.json();
     removeTyping();
-    if(data.outOfScope){
+    if(data.humanActive){
+      addMessage("system","HUMAN ACTIVE — bot standing down, human-active tag detected.");
+    } else if(data.outOfScope){
       addMessage("system","OUT OF SCOPE — bot went silent. Slack alert fired to #ghl-alerts.");
     } else {
       addMessage("bot",data.reply);
