@@ -15,12 +15,108 @@ const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 // Per-contact conversation memory
 const conversations = new Map();
 
-const SYSTEM_PROMPT = `You are a helpful assistant for Saints of Flow, Jason Crouse's coaching brand. You are texting with someone who has already registered for the Big Three Mastery Workshop. Your job is to answer their questions in a warm, conversational, human way like a real person on the team, not a bot.
+// Workshop date — fetched from the landing page and cached
+let cachedWorkshopDate = null;
+let workshopDateCachedAt = null;
+const CACHE_TTL = 6 * 60 * 60 * 1000; // refresh every 6 hours
+
+async function fetchWorkshopDate() {
+  try {
+    const res = await fetch("https://webinar.saintsofflow.com");
+    const html = await res.text();
+    // Matches patterns like "Saturday, May 30th @ 9:00am PST" or "Saturday, May 30th @ 9am PST"
+    const match = html.match(/(\w+),\s+(\w+)\s+(\d+)\w*\s+@\s+(\d+)(?::(\d+))?(am|pm)\s*(PST|PDT|PT)/i);
+    if (!match) {
+      console.error("Could not parse workshop date from site");
+      return null;
+    }
+    const [, , monthName, day, hour, minute = "00", ampm] = match;
+    const months = { January:0, February:1, March:2, April:3, May:4, June:5,
+                     July:6, August:7, September:8, October:9, November:10, December:11 };
+    const monthIdx = months[monthName];
+    if (monthIdx === undefined) return null;
+
+    let h = parseInt(hour);
+    if (ampm.toLowerCase() === "pm" && h !== 12) h += 12;
+    if (ampm.toLowerCase() === "am" && h === 12) h = 0;
+
+    // Pacific time: PDT (UTC-7) Mar-Nov, PST (UTC-8) Nov-Mar
+    const tzOffset = (monthIdx >= 2 && monthIdx <= 10) ? -7 : -8;
+    const offsetStr = `${tzOffset < 0 ? "-" : "+"}${String(Math.abs(tzOffset)).padStart(2, "0")}:00`;
+
+    const year = new Date().getFullYear();
+    const dateStr = `${year}-${String(monthIdx + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(h).padStart(2, "0")}:${minute}:00${offsetStr}`;
+    let workshopDate = new Date(dateStr);
+
+    // If date is already more than a day in the past, try next year
+    if (workshopDate < new Date(Date.now() - 24 * 60 * 60 * 1000)) {
+      workshopDate = new Date(dateStr.replace(`${year}-`, `${year + 1}-`));
+    }
+
+    console.log(`Workshop date fetched from site: ${workshopDate}`);
+    return workshopDate;
+  } catch (err) {
+    console.error("Failed to fetch workshop date from site:", err);
+    return null;
+  }
+}
+
+function nextSaturdayAt9amPT() {
+  const now = new Date();
+  // Get current time in PT
+  const ptNow = new Date(now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
+  const day = ptNow.getDay(); // 0=Sun, 6=Sat
+  const daysUntilSat = day === 6 ? 7 : (6 - day); // if today is Sat, use next Sat
+  const sat = new Date(ptNow);
+  sat.setDate(ptNow.getDate() + daysUntilSat);
+  sat.setHours(9, 0, 0, 0);
+  // Convert back to UTC-based Date using PT offset
+  const month = sat.getMonth();
+  const tzOffset = (month >= 2 && month <= 10) ? -7 : -8;
+  return new Date(sat.getTime() - tzOffset * 60 * 60 * 1000);
+}
+
+async function getWorkshopDate() {
+  const now = Date.now();
+  if (cachedWorkshopDate && workshopDateCachedAt && (now - workshopDateCachedAt) < CACHE_TTL) {
+    return cachedWorkshopDate;
+  }
+  const date = await fetchWorkshopDate();
+  if (date) {
+    cachedWorkshopDate = date;
+    workshopDateCachedAt = now;
+  }
+  // Fall back to next available Saturday at 9am PT if fetch failed
+  return cachedWorkshopDate || nextSaturdayAt9amPT();
+}
+
+async function buildSystemPrompt() {
+  const now = new Date();
+  const workshopTime = await getWorkshopDate();
+  const minutesUntil = Math.round((workshopTime - now) / 60000);
+  const workshopDateLabel = workshopTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" });
+
+  let timeContext;
+  if (minutesUntil > 60 * 24) {
+    timeContext = `Right now it is more than a day before the workshop. Keep energy up and warm.`;
+  } else if (minutesUntil > 90) {
+    timeContext = `Right now it is the day of the workshop but still a few hours away. Keep energy excited.`;
+  } else if (minutesUntil > 0) {
+    timeContext = `Right now it is ${minutesUntil} minutes until the workshop starts. Energy should be high — we're almost live! Say things like "almost time!" or "we're about to go live!" not "see you Saturday."`;
+  } else if (minutesUntil > -120) {
+    timeContext = `The workshop is currently live right now. If someone messages, let them know it already started and give them the Zoom link.`;
+  } else {
+    timeContext = `The workshop has already ended. If someone messages, let them know it's over and mention the replay or next workshop.`;
+  }
+
+  return `You are a helpful assistant for Saints of Flow, Jason Crouse's coaching brand. You are texting with someone who has already registered for the Big Three Mastery Workshop. Your job is to answer their questions in a warm, conversational, human way like a real person on the team, not a bot.
+
+CURRENT TIME CONTEXT: ${timeContext}
 
 ABOUT THE WORKSHOP:
 - Name: The Big Three Mastery Workshop
 - Host: Jason Crouse
-- Date: Saturday, May 30th
+- Date: ${workshopDateLabel}
 - Time: 9am pt (if someone asks about other time zones: 10am mt / 11am ct / 12pm et)
 - Cost: Free
 - Length: about 75-90 minutes (includes Q&A)
@@ -75,6 +171,7 @@ OUT OF SCOPE — questions you should NOT answer:
 CRITICAL RULE: If a message is out of scope or you are unsure how to answer it, respond with exactly this single word and nothing else: OUTOFSCOPE
 
 remember: everyone texting has already registered, they are warm, be helpful, be human, be brief.`;
+}
 
 const TRIAGE_PROMPT = `You are a triage assistant. Your only job is to classify an inbound text message for a workshop logistics bot.
 
@@ -250,7 +347,7 @@ app.post("/chat", async (req, res) => {
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-5",
       max_tokens: 1000,
-      system: SYSTEM_PROMPT,
+      system: await buildSystemPrompt(),
       messages: conversation.slice(-20),
     });
     reply = response.content[0].text;
