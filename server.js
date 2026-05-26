@@ -125,9 +125,10 @@ ABOUT THE WORKSHOP:
 - What it covers: how to master the Big Three which are career, love, and confidence. specifically turning purpose into a career that fits you, attracting love that actually feels right, and building real confidence by keeping promises to yourself
 
 REPLAY POLICY:
-- there is a replay but attending live is strongly recommended because it's an interactive workshop not just a presentation
-- if someone cannot make it live, gently encourage them to attend the next one which runs the following Saturday at 9am pt
-- ask them what their situation is, are they definitely unable to make it or just unsure? help them find a way to be there live if at all possible
+- only bring up the replay or next workshop if someone explicitly says they cannot make it — do NOT mention it for ambiguous messages like "I might be late" or "traveling" or "hope I can make it"
+- if someone says something ambiguous, keep it warm and hopeful, like "fingers crossed you make it!" and leave it there
+- if someone clearly cannot make it, acknowledge it warmly, mention there is a replay, and point them to the next one the following Saturday at 9am pt
+- never push the replay unprompted — attending live is way better and that energy should come through
 
 TONE AND BEHAVIOR:
 - warm, genuinely enthusiastic, like a real person on Jason's team who actually likes their job
@@ -385,6 +386,13 @@ app.post("/reset", (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/seed", (req, res) => {
+  const { messages } = req.body;
+  if (!Array.isArray(messages)) return res.status(400).json({ error: "messages must be an array" });
+  conversations.set("local-test", messages);
+  res.json({ ok: true, seeded: messages.length });
+});
+
 app.get("/", (req, res) => {
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -433,6 +441,15 @@ button.reset:hover{color:var(--gold)}
 .empty-icon{width:48px;height:48px;border-radius:50%;background:var(--surface);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;margin-bottom:4px;font-size:20px}
 .empty-title{font-size:15px;font-weight:500;color:var(--text)}
 .empty-sub{font-size:13px;color:var(--text-dim);max-width:280px;line-height:1.5}
+.seed-panel{border-top:1px solid var(--border);padding:12px 28px;flex-shrink:0;background:var(--surface)}
+.seed-toggle{font-size:11px;color:var(--text-dim);background:none;border:none;cursor:pointer;font-family:'DM Mono',monospace;padding:0;display:flex;align-items:center;gap:6px}
+.seed-toggle:hover{color:var(--gold)}
+.seed-body{display:none;margin-top:10px;flex-direction:column;gap:8px}
+.seed-body.open{display:flex}
+.seed-body textarea{min-height:90px;max-height:180px;font-size:12px;font-family:'DM Mono',monospace;line-height:1.6;resize:vertical}
+.seed-actions{display:flex;gap:8px;align-items:center}
+button.seed-load{font-size:12px;background:var(--gold);color:#0f0e0c;border:none;border-radius:8px;padding:6px 14px;cursor:pointer;font-family:'DM Sans',sans-serif;font-weight:600}
+.seed-status{font-size:11px;color:var(--text-dim);font-family:'DM Mono',monospace}
 </style>
 </head>
 <body>
@@ -464,6 +481,19 @@ button.reset:hover{color:var(--gold)}
   <div class="footer">
     <span class="hint">Enter to send</span>
     <button class="reset" onclick="resetConversation()">Reset conversation</button>
+  </div>
+</div>
+<div class="seed-panel">
+  <button class="seed-toggle" onclick="toggleSeed()">▸ Set context</button>
+  <div class="seed-body" id="seedBody" style="display:none">
+    <textarea id="seedInput" placeholder="Paste prior conversation, one message per line:
+
+BOT: Yoo, do you have any questions before tomorrow?
+YOU: Traveling. Hope to be settled in time"></textarea>
+    <div class="seed-actions">
+      <button class="seed-load" onclick="loadSeed()">Load context</button>
+      <span class="seed-status" id="seedStatus"></span>
+    </div>
   </div>
 </div>
 </div>
@@ -533,8 +563,55 @@ async function resetConversation(){
   messagesEl.innerHTML="";
   messagesEl.appendChild(emptyState);
   emptyState.style.display="flex";
+  document.getElementById("seedStatus").textContent="";
 }
 inputEl.focus();
+function toggleSeed(){
+  const body=document.getElementById("seedBody");
+  const btn=document.querySelector(".seed-toggle");
+  const isOpen=body.style.display==="flex";
+  body.style.display=isOpen?"none":"flex";
+  body.style.flexDirection="column";
+  body.style.gap="8px";
+  body.style.marginTop="10px";
+  btn.textContent=isOpen?"▸ Set context":"▾ Set context";
+}
+async function loadSeed(){
+  const raw=document.getElementById("seedInput").value.trim();
+  const statusEl=document.getElementById("seedStatus");
+  if(!raw){statusEl.textContent="nothing to load";return;}
+  const messages=[];
+  for(const line of raw.split("\n")){
+    const trimmed=line.trim();
+    if(!trimmed)continue;
+    if(/^BOT:/i.test(trimmed)) messages.push({role:"assistant",content:trimmed.replace(/^BOT:\s*/i,"")});
+    else if(/^YOU:/i.test(trimmed)) messages.push({role:"user",content:trimmed.replace(/^YOU:\s*/i,"")});
+  }
+  if(!messages.length){statusEl.textContent="couldn't parse any lines";return;}
+  await fetch("/reset",{method:"POST"});
+  const res=await fetch("/seed",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages})});
+  const data=await res.json();
+  messagesEl.innerHTML="";
+  messagesEl.appendChild(emptyState);
+  emptyState.style.display="none";
+  for(const m of messages){
+    const role=m.role==="user"?"user":"bot";
+    const msg=document.createElement("div");
+    msg.className="message "+role;
+    msg.style.opacity="0.45";
+    const label=document.createElement("div");
+    label.className="label";
+    label.textContent=(role==="user"?"YOU [context]":"SOF BOT [context]");
+    const bubble=document.createElement("div");
+    bubble.className="bubble";
+    bubble.textContent=m.content;
+    msg.appendChild(label);msg.appendChild(bubble);
+    messagesEl.appendChild(msg);
+  }
+  messagesEl.scrollTop=messagesEl.scrollHeight;
+  statusEl.textContent=data.seeded+" messages loaded ✓";
+  toggleSeed();
+}
 </script>
 </body>
 </html>`);
