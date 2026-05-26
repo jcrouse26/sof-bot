@@ -484,7 +484,7 @@ button.seed-load{font-size:12px;background:var(--gold);color:#0f0e0c;border:none
   </div>
 </div>
 <div class="seed-panel">
-  <button class="seed-toggle" onclick="toggleSeed()">▸ Set context</button>
+  <button class="seed-toggle" onclick="toggleSeed()">+ Set context</button>
   <div class="seed-body" id="seedBody" style="display:none">
     <textarea id="seedInput" placeholder="Paste prior conversation, one message per line:
 
@@ -547,9 +547,9 @@ async function sendMessage(){
     const data=await res.json();
     removeTyping();
     if(data.humanActive){
-      addMessage("system","HUMAN ACTIVE — bot standing down, human-active tag detected.");
+      addMessage("system","HUMAN ACTIVE - bot standing down, human-active tag detected.");
     } else if(data.outOfScope){
-      addMessage("system","OUT OF SCOPE — bot went silent. Slack alert fired to #ghl-alerts.");
+      addMessage("system","OUT OF SCOPE - bot went silent. Slack alert fired to #ghl-alerts.");
     } else {
       addMessage("bot",data.reply);
     }
@@ -574,18 +574,18 @@ function toggleSeed(){
   body.style.flexDirection="column";
   body.style.gap="8px";
   body.style.marginTop="10px";
-  btn.textContent=isOpen?"▸ Set context":"▾ Set context";
+  btn.textContent=isOpen?"+ Set context":"- Set context";
 }
 async function loadSeed(){
   const raw=document.getElementById("seedInput").value.trim();
   const statusEl=document.getElementById("seedStatus");
   if(!raw){statusEl.textContent="nothing to load";return;}
   const messages=[];
-  for(const line of raw.split("\n")){
+  for(const line of raw.split("\\n")){
     const trimmed=line.trim();
     if(!trimmed)continue;
-    if(/^BOT:/i.test(trimmed)) messages.push({role:"assistant",content:trimmed.replace(/^BOT:\s*/i,"")});
-    else if(/^YOU:/i.test(trimmed)) messages.push({role:"user",content:trimmed.replace(/^YOU:\s*/i,"")});
+    if(/^BOT:/i.test(trimmed)) messages.push({role:"assistant",content:trimmed.replace(/^BOT:[\\s]*/i,"")});
+    else if(/^YOU:/i.test(trimmed)) messages.push({role:"user",content:trimmed.replace(/^YOU:[\\s]*/i,"")});
   }
   if(!messages.length){statusEl.textContent="couldn't parse any lines";return;}
   await fetch("/reset",{method:"POST"});
@@ -609,7 +609,7 @@ async function loadSeed(){
     messagesEl.appendChild(msg);
   }
   messagesEl.scrollTop=messagesEl.scrollHeight;
-  statusEl.textContent=data.seeded+" messages loaded ✓";
+  statusEl.textContent=data.seeded+" messages loaded";
   toggleSeed();
 }
 </script>
