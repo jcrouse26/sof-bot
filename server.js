@@ -96,6 +96,49 @@ async function triage(message) {
   return response.content[0].text.trim();
 }
 
+async function getGHLConversationHistory(contactId) {
+  if (!contactId || !GHL_API_KEY || !GHL_LOCATION_ID) return [];
+  try {
+    // Step 1: find the conversation for this contact
+    const searchRes = await fetch(
+      `https://services.leadconnectorhq.com/conversations/search?locationId=${GHL_LOCATION_ID}&contactId=${contactId}`,
+      {
+        headers: {
+          "Authorization": `Bearer ${GHL_API_KEY}`,
+          "Version": "2021-04-15",
+        },
+      }
+    );
+    const searchData = await searchRes.json();
+    const conversationId = searchData?.conversations?.[0]?.id;
+    if (!conversationId) return [];
+
+    // Step 2: fetch the last 10 SMS messages
+    const msgsRes = await fetch(
+      `https://services.leadconnectorhq.com/conversations/${conversationId}/messages?limit=10`,
+      {
+        headers: {
+          "Authorization": `Bearer ${GHL_API_KEY}`,
+          "Version": "2021-04-15",
+        },
+      }
+    );
+    const msgsData = await msgsRes.json();
+    const messages = msgsData?.messages?.messages || msgsData?.messages || [];
+
+    // Step 3: map to Claude format — inbound = user, outbound = assistant, SMS only
+    return messages
+      .filter(m => m.body && (m.messageType === "SMS" || m.type === 1 || m.type === 2))
+      .map(m => ({
+        role: m.direction === "inbound" ? "user" : "assistant",
+        content: m.body,
+      }));
+  } catch (err) {
+    console.error("GHL history fetch error:", err);
+    return [];
+  }
+}
+
 async function hasHumanActiveTag(contactId) {
   if (!contactId || !GHL_API_KEY) return false;
   try {
@@ -192,9 +235,12 @@ app.post("/chat", async (req, res) => {
   }
 
   // Get or create per-contact conversation history
+  // If we don't have it in memory, seed from GHL so restarts don't lose context
   const conversationKey = contactId || "local-test";
   if (!conversations.has(conversationKey)) {
-    conversations.set(conversationKey, []);
+    const history = await getGHLConversationHistory(contactId);
+    console.log(`Seeded ${history.length} messages from GHL for contact ${contactId}`);
+    conversations.set(conversationKey, history);
   }
   const conversation = conversations.get(conversationKey);
 
