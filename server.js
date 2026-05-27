@@ -122,7 +122,7 @@ ABOUT THE WORKSHOP:
 - Length: about 75-90 minutes (includes Q&A)
 - Platform: Zoom
 - How to join: they will receive a Zoom link via email and it will also be texted to them the morning of the event
-- What it covers: how to master the Big Three which are career, love, and confidence. specifically turning purpose into a career that fits you, attracting love that actually feels right, and building real confidence by keeping promises to yourself
+- What it covers: how to master the Big Three which are career, love, and confidence. specifically turning your calling into an actual career, attracting the right kind of love, and building real confidence by keeping promises to yourself
 
 REPLAY POLICY:
 - only bring up the replay or next workshop if someone explicitly says they cannot make it — do NOT mention it for ambiguous messages like "I might be late" or "traveling" or "hope I can make it"
@@ -145,6 +145,7 @@ TONE AND BEHAVIOR:
 - do not sell or pitch anything, this is purely logistics and info support
 
 COMMON QUESTIONS AND HOW TO HANDLE THEM:
+- "What is it?" / "I don't remember signing up" / "remind me what this is" - describe what the workshop covers warmly (the Big Three: career, love, confidence), skip all the logistics like price, length, and Zoom link — just re-engage them on what it's about, end with something like "does that ring a bell?" or "does that sound familiar?"
 - "What time does it start?" - 9am pt this coming Saturday, only mention other time zones if they explicitly ask
 - "Where do I join?" - check their email for the Zoom link, it'll also be texted to them day of
 - "Will there be a replay?" - yeah there is one but we really recommend being there live since it's a workshop, if they can't make it point them to the following Saturday
@@ -180,9 +181,11 @@ IN SCOPE: questions about workshop date, time, length, platform, Zoom link, repl
 
 SOCIAL: casual acknowledgments with no real question — things like "thanks", "ok", "sounds good", "got it", "👍", "great", "awesome", "perfect", or similar short responses.
 
+OPTOUT: the person wants to stop receiving messages — "stop", "unsubscribe", "take me off", "remove me", "opt out", "don't text me", "cancel", or any variation of asking to be removed from the list.
+
 OUT OF SCOPE: anything about coaching programs, pricing, personal advice, or anything unrelated to basic workshop logistics.
 
-Reply with exactly one word: INSCOPE, SOCIAL, or OUTOFSCOPE`;
+Reply with exactly one word: INSCOPE, SOCIAL, OUTOFSCOPE, or OPTOUT`;
 
 async function triage(message) {
   const response = await anthropic.messages.create({
@@ -293,6 +296,23 @@ async function sendSlackAlert(contactInfo, message) {
   }
 }
 
+async function addGHLTag(contactId, tag) {
+  if (!contactId || !GHL_API_KEY) return;
+  try {
+    await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}/tags`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GHL_API_KEY}`,
+        "Content-Type": "application/json",
+        Version: "2021-07-28",
+      },
+      body: JSON.stringify({ tags: [tag] }),
+    });
+  } catch (err) {
+    console.error("addGHLTag error:", err);
+  }
+}
+
 app.post("/chat", async (req, res) => {
   console.log("Incoming GHL payload:", JSON.stringify(req.body, null, 2));
 
@@ -325,6 +345,19 @@ app.post("/chat", async (req, res) => {
   }
 
   console.log("Triage result:", triageResult);
+
+  if (triageResult === "OPTOUT") {
+    const confirmMsg = "got it, you're all set! so sorry for any interruption 🙏";
+    // Tag them in GHL so future workflow steps don't fire
+    if (contactId) {
+      await addGHLTag(contactId, "opted-out");
+    }
+    if (contactId) {
+      await sendGHLReply(contactId, confirmMsg);
+      return res.json({ reply: confirmMsg, optOut: true, sent: true });
+    }
+    return res.json({ reply: confirmMsg, optOut: true });
+  }
 
   if (triageResult === "OUTOFSCOPE") {
     const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
@@ -548,6 +581,8 @@ async function sendMessage(){
     removeTyping();
     if(data.humanActive){
       addMessage("system","HUMAN ACTIVE - bot standing down, human-active tag detected.");
+    } else if(data.optOut){
+      addMessage("system","OPT-OUT detected - confirmation sent, tagged opted-out in GHL.");
     } else if(data.outOfScope){
       addMessage("system","OUT OF SCOPE - bot went silent. Slack alert fired to #ghl-alerts.");
     } else {
