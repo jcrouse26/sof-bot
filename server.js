@@ -296,6 +296,21 @@ async function sendSlackAlert(contactInfo, message) {
   }
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function typingDelay(text) {
+  const len = text.length;
+  let base;
+  if (len < 80) base = 14;
+  else if (len < 200) base = 31;
+  else base = 53;
+  // ±25% jitter so it never feels like a timer
+  const jitter = base * 0.25;
+  return Math.round((base + (Math.random() * jitter * 2 - jitter)) * 1000);
+}
+
 async function addGHLTag(contactId, tag) {
   if (!contactId || !GHL_API_KEY) return;
   try {
@@ -401,17 +416,24 @@ app.post("/chat", async (req, res) => {
 
   conversation.push({ role: "assistant", content: reply });
 
-  // Send the reply directly via GHL if we have a contactId
+  const delay = typingDelay(reply);
+  console.log(`Typing delay: ${Math.round(delay / 1000)}s for ${reply.length} char reply`);
+
   if (contactId) {
+    // Respond to GHL webhook immediately so it doesn't time out,
+    // then wait the delay before actually sending the SMS
+    res.json({ reply, outOfScope: false, sent: true });
+    await sleep(delay);
     try {
       await sendGHLReply(contactId, reply);
     } catch (err) {
       console.error("GHL send error:", err);
     }
-    return res.json({ reply, outOfScope: false, sent: true });
+  } else {
+    // Local tester — hold the response so the typing dots stay up
+    await sleep(delay);
+    res.json({ reply, outOfScope: false });
   }
-
-  res.json({ reply, outOfScope: false });
 });
 
 app.post("/reset", (req, res) => {
