@@ -433,7 +433,7 @@ app.post("/chat", async (req, res) => {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${SLACK_TOKEN}` },
         body: JSON.stringify({
           channel: SLACK_ALERT_CHANNEL,
-          text: `📋 *Next week signup request*\n*Contact:* ${contactInfo}\n*Phone:* ${contactPhone || "unknown"}\nThey said yes to next Saturday — add them to the list.`,
+          text: `📋 *Next week signup request*\n*Contact:* ${contactInfo}\n<https://app.gohighlevel.com/v2/location/${GHL_LOCATION_ID}/contacts/detail/${contactId}|View in GHL>\nThey said yes to next Saturday — add them to the list.`,
         }),
       });
     } catch (err) {
