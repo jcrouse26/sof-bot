@@ -95,6 +95,8 @@ async function buildSystemPrompt() {
   const workshopTime = await getWorkshopDate();
   const minutesUntil = Math.round((workshopTime - now) / 60000);
   const workshopDateLabel = workshopTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" });
+  const nextWorkshopTime = new Date(workshopTime.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const nextWorkshopDateLabel = nextWorkshopTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" });
 
   // Compare calendar dates in PT so "22 hours away" doesn't get treated as "day of"
   const nowPT = new Date(now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
@@ -133,8 +135,8 @@ REPLAY POLICY:
 - only bring up the replay or next workshop if someone explicitly says they cannot make it — do NOT mention it for ambiguous messages like "I might be late" or "traveling" or "hope I can make it"
 - if someone says something ambiguous, keep it warm and hopeful, like "fingers crossed you make it!" and leave it there
 - if someone clearly cannot make it or says they'll be away: don't immediately mention the replay — instead ask warmly "are you around next Saturday?" and leave it there
-- if they say yes to next Saturday: tell them warmly you'll get them added to next week's list, then add [NEXT_WEEK_SIGNUP] on its own line at the very end of your message (this tag gets stripped before sending, it's just for internal tracking)
-- if they say no to next Saturday or are unsure: mention the replay warmly and point them to webinar.saintsofflow.com for the next one
+- if they say yes to the next one: tell them warmly you'll get them added to the list — the next workshop is ${nextWorkshopDateLabel} at 9am pt, use that date — then add [NEXT_WEEK_SIGNUP] on its own line at the very end of your message (this tag gets stripped before sending, it's just for internal tracking)
+- if they say no to next Saturday or are unsure: mention the replay warmly and point them to webinar.saintsofflow.com to register for the next one
 - never push the replay unprompted — attending live is way better and that energy should come through
 
 TONE AND BEHAVIOR:
