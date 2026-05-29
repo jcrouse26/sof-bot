@@ -15,6 +15,9 @@ const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
 // Per-contact conversation memory
 const conversations = new Map();
 
+// Track contacts who've already had a next-week signup alert sent
+const nextWeekAlerted = new Set();
+
 // Workshop date — fetched from the landing page and cached
 let cachedWorkshopDate = null;
 let workshopDateCachedAt = null;
@@ -287,8 +290,9 @@ async function sendGHLReply(contactId, message) {
   });
 }
 
-async function sendSlackAlert(contactInfo, message) {
-  const alertText = `🚨 *Bot handoff needed*\n*Contact:* ${contactInfo}\n*Their message:* "${message}"\n\nThis was outside the bot's scope — please follow up manually.`;
+async function sendSlackAlert(contactInfo, message, contactId) {
+  const ghlLink = contactId ? `\n<https://app.gohighlevel.com/v2/location/${GHL_LOCATION_ID}/contacts/detail/${contactId}|View in GHL>` : "";
+  const alertText = `🚨 *Bot handoff needed*\n*Contact:* ${contactInfo}\n*Their message:* "${message}"${ghlLink}\n\nThis was outside the bot's scope — please follow up manually.`;
   try {
     const res = await fetch("https://slack.com/api/chat.postMessage", {
       method: "POST",
@@ -388,7 +392,7 @@ app.post("/chat", async (req, res) => {
 
   if (triageResult === "OUTOFSCOPE") {
     const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
-    await sendSlackAlert(contactInfo, messageText);
+    await sendSlackAlert(contactInfo, messageText, contactId);
     return res.json({ reply: null, outOfScope: true });
   }
 
@@ -421,7 +425,7 @@ app.post("/chat", async (req, res) => {
   // Safety net: if the main bot still returns OUTOFSCOPE, treat it the same way
   if (reply.trim() === "OUTOFSCOPE") {
     const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
-    await sendSlackAlert(contactInfo, messageText);
+    await sendSlackAlert(contactInfo, messageText, contactId);
     conversation.pop();
     return res.json({ reply: null, outOfScope: true });
   }
@@ -430,7 +434,8 @@ app.post("/chat", async (req, res) => {
   const nextWeekSignup = reply.includes("[NEXT_WEEK_SIGNUP]");
   reply = reply.replace(/\[NEXT_WEEK_SIGNUP\]/g, "").trim();
 
-  if (nextWeekSignup) {
+  if (nextWeekSignup && !nextWeekAlerted.has(conversationKey)) {
+    nextWeekAlerted.add(conversationKey);
     const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
     try {
       await fetch("https://slack.com/api/chat.postMessage", {
