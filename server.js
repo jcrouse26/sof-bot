@@ -460,8 +460,7 @@ app.post("/chat", async (req, res) => {
       console.error("GHL send error:", err);
     }
   } else {
-    // Local tester — hold the response so the typing dots stay up
-    await sleep(delay);
+    // Local tester — no delay
     res.json({ reply, outOfScope: false });
   }
 });
