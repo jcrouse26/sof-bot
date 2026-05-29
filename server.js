@@ -304,6 +304,29 @@ async function sendSlackAlert(contactInfo, message) {
   }
 }
 
+async function logToSheet({ contactName, contactPhone, contactId, message, triage, reply, nextWeekSignup }) {
+  const webhookUrl = process.env.GOOGLE_SHEET_WEBHOOK;
+  if (!webhookUrl) return;
+  try {
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        timestamp: new Date().toISOString(),
+        contactName: contactName || "",
+        contactPhone: contactPhone || "",
+        contactId: contactId || "",
+        message,
+        triage,
+        reply: reply || "",
+        nextWeekSignup: !!nextWeekSignup,
+      }),
+    });
+  } catch (err) {
+    console.error("Sheet log error:", err);
+  }
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -419,6 +442,9 @@ app.post("/chat", async (req, res) => {
   }
 
   conversation.push({ role: "assistant", content: reply });
+
+  // Log to Google Sheet (fire and forget)
+  logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triageResult, reply, nextWeekSignup });
 
   const delay = typingDelay(reply);
   console.log(`Typing delay: ${Math.round(delay / 1000)}s for ${reply.length} char reply`);
