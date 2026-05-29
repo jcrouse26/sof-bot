@@ -180,6 +180,8 @@ OUT OF SCOPE — questions you should NOT answer:
 
 CRITICAL RULE: If a message is out of scope or you are unsure how to answer it, respond with exactly this single word and nothing else: OUTOFSCOPE
 
+READING CONTEXT: always read the full conversation history before responding. short replies like "yes", "no", "ok", "sure" are almost always a response to the most recent thing said — figure out what they're responding to before replying. never assume "yes" means "yes I have a question" if the prior message wasn't asking about questions.
+
 remember: everyone texting has already registered, they are warm, be helpful, be human, be brief.`;
 }
 
@@ -310,6 +312,7 @@ async function logToSheet({ contactName, contactPhone, contactId, message, triag
   try {
     await fetch(webhookUrl, {
       method: "POST",
+      redirect: "follow",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         timestamp: new Date().toISOString(),
