@@ -96,17 +96,22 @@ async function buildSystemPrompt() {
   const minutesUntil = Math.round((workshopTime - now) / 60000);
   const workshopDateLabel = workshopTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" });
 
+  // Compare calendar dates in PT so "22 hours away" doesn't get treated as "day of"
+  const nowPT = new Date(now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
+  const workshopPT = new Date(workshopTime.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
+  const isWorkshopDay = nowPT.toDateString() === workshopPT.toDateString();
+
   let timeContext;
-  if (minutesUntil > 60 * 24) {
-    timeContext = `Right now it is more than a day before the workshop. Keep energy up and warm.`;
-  } else if (minutesUntil > 90) {
-    timeContext = `Right now it is the day of the workshop but still a few hours away. Keep energy excited.`;
-  } else if (minutesUntil > 0) {
-    timeContext = `Right now it is ${minutesUntil} minutes until the workshop starts. Energy should be high — we're almost live! Say things like "almost time!" or "we're about to go live!" not "see you Saturday."`;
-  } else if (minutesUntil > -120) {
+  if (minutesUntil <= 0 && minutesUntil > -120) {
     timeContext = `The workshop is currently live right now. If someone messages, let them know it already started and give them the Zoom link.`;
-  } else {
+  } else if (minutesUntil <= -120) {
     timeContext = `The workshop has already ended. If someone messages, let them know it's over and mention the replay or next workshop.`;
+  } else if (!isWorkshopDay) {
+    timeContext = `The workshop is not today — it is coming up on ${workshopDateLabel}. Do NOT say things like "this morning" or "today." Keep energy warm and anticipatory.`;
+  } else if (minutesUntil > 90) {
+    timeContext = `Today IS the day of the workshop (${workshopDateLabel}) but it is still a few hours away. The Zoom link will be texted out this morning. Keep energy excited.`;
+  } else {
+    timeContext = `Right now it is ${minutesUntil} minutes until the workshop starts. Energy should be high — we're almost live! Say things like "almost time!" or "we're about to go live!"`;
   }
 
   return `You are a helpful assistant for Saints of Flow, Jason Crouse's coaching brand. You are texting with someone who has already registered for the Big Three Mastery Workshop. Your job is to answer their questions in a warm, conversational, human way like a real person on the team, not a bot.
@@ -127,7 +132,9 @@ ABOUT THE WORKSHOP:
 REPLAY POLICY:
 - only bring up the replay or next workshop if someone explicitly says they cannot make it — do NOT mention it for ambiguous messages like "I might be late" or "traveling" or "hope I can make it"
 - if someone says something ambiguous, keep it warm and hopeful, like "fingers crossed you make it!" and leave it there
-- if someone clearly cannot make it, acknowledge it warmly, mention there is a replay, and point them to the next one the following Saturday at 9am pt
+- if someone clearly cannot make it or says they'll be away: don't immediately mention the replay — instead ask warmly "are you around next Saturday?" and leave it there
+- if they say yes to next Saturday: tell them warmly you'll get them added to next week's list, then add [NEXT_WEEK_SIGNUP] on its own line at the very end of your message (this tag gets stripped before sending, it's just for internal tracking)
+- if they say no to next Saturday or are unsure: mention the replay warmly and point them to webinar.saintsofflow.com for the next one
 - never push the replay unprompted — attending live is way better and that energy should come through
 
 TONE AND BEHAVIOR:
@@ -146,6 +153,7 @@ TONE AND BEHAVIOR:
 
 COMMON QUESTIONS AND HOW TO HANDLE THEM:
 - "What is it?" / "I don't remember signing up" / "remind me what this is" - describe what the workshop covers warmly (the Big Three: career, love, confidence), skip all the logistics like price, length, and Zoom link — just re-engage them on what it's about, end with something like "does that ring a bell?" or "does that sound familiar?"
+- if the prior context shows you just asked "does that sound familiar?" or "does that ring a bell?" and they reply "yes", "yeah", "yep", or similar — they're confirming they remember, NOT saying they have a question. respond warmly, like "awesome! so excited for you to be there 🙌🏼 any questions before we go live?" — never respond with "what's your question?" in this context
 - "What time does it start?" - 9am pt this coming Saturday, only mention other time zones if they explicitly ask
 - "Where do I join?" - check their email for the Zoom link, it'll also be texted to them day of
 - "Will there be a replay?" - yeah there is one but we really recommend being there live since it's a workshop, if they can't make it point them to the following Saturday
@@ -177,7 +185,7 @@ remember: everyone texting has already registered, they are warm, be helpful, be
 
 const TRIAGE_PROMPT = `You are a triage assistant. Your only job is to classify an inbound text message for a workshop logistics bot.
 
-IN SCOPE: questions about workshop date, time, length, platform, Zoom link, replay, confirmation email, what the workshop covers, bringing a friend, what to prepare.
+IN SCOPE: questions about workshop date, time, length, platform, Zoom link, replay, confirmation email, what the workshop covers, bringing a friend, what to prepare. Also includes: saying they can't make it, will be away, asking if there's another time or another session, anything about attending next week instead.
 
 SOCIAL: casual acknowledgments with no real question — things like "thanks", "ok", "sounds good", "got it", "👍", "great", "awesome", "perfect", or similar short responses.
 
@@ -311,22 +319,6 @@ function typingDelay(text) {
   return Math.round((base + (Math.random() * jitter * 2 - jitter)) * 1000);
 }
 
-async function addGHLTag(contactId, tag) {
-  if (!contactId || !GHL_API_KEY) return;
-  try {
-    await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}/tags`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${GHL_API_KEY}`,
-        "Content-Type": "application/json",
-        Version: "2021-07-28",
-      },
-      body: JSON.stringify({ tags: [tag] }),
-    });
-  } catch (err) {
-    console.error("addGHLTag error:", err);
-  }
-}
 
 app.post("/chat", async (req, res) => {
   console.log("Incoming GHL payload:", JSON.stringify(req.body, null, 2));
@@ -362,16 +354,8 @@ app.post("/chat", async (req, res) => {
   console.log("Triage result:", triageResult);
 
   if (triageResult === "OPTOUT") {
-    const confirmMsg = "got it, you're all set! so sorry for any interruption 🙏";
-    // Tag them in GHL so future workflow steps don't fire
-    if (contactId) {
-      await addGHLTag(contactId, "opted-out");
-    }
-    if (contactId) {
-      await sendGHLReply(contactId, confirmMsg);
-      return res.json({ reply: confirmMsg, optOut: true, sent: true });
-    }
-    return res.json({ reply: confirmMsg, optOut: true });
+    console.log("Opt-out detected, bot going silent");
+    return res.json({ reply: null, optOut: true });
   }
 
   if (triageResult === "OUTOFSCOPE") {
@@ -412,6 +396,26 @@ app.post("/chat", async (req, res) => {
     await sendSlackAlert(contactInfo, messageText);
     conversation.pop();
     return res.json({ reply: null, outOfScope: true });
+  }
+
+  // Check for next-week signup marker and strip it before sending
+  const nextWeekSignup = reply.includes("[NEXT_WEEK_SIGNUP]");
+  reply = reply.replace(/\[NEXT_WEEK_SIGNUP\]/g, "").trim();
+
+  if (nextWeekSignup) {
+    const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
+    try {
+      await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SLACK_TOKEN}` },
+        body: JSON.stringify({
+          channel: SLACK_ALERT_CHANNEL,
+          text: `📋 *Next week signup request*\n*Contact:* ${contactInfo}\n*Phone:* ${contactPhone || "unknown"}\nThey said yes to next Saturday — add them to the list.`,
+        }),
+      });
+    } catch (err) {
+      console.error("Slack next-week alert error:", err);
+    }
   }
 
   conversation.push({ role: "assistant", content: reply });
@@ -558,6 +562,7 @@ const inputEl=document.getElementById("input");
 const sendBtn=document.getElementById("sendBtn");
 const emptyState=document.getElementById("emptyState");
 let isLoading=false;
+document.getElementById("seedInput").value="BOT: hey Mario it's Jason Crouse. Do you have any questions for me before our live workshop tomorrow? Start time is 9:00am PST";
 function autoResize(el){el.style.height="auto";el.style.height=Math.min(el.scrollHeight,120)+"px"}
 function handleKey(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage()}}
 function addMessage(role,text){
