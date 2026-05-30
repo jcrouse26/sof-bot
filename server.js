@@ -246,17 +246,17 @@ async function getGHLConversationHistory(contactId) {
     const msgsData = await msgsRes.json();
     const messages = msgsData?.messages?.messages || msgsData?.messages || [];
 
-    // Step 3: map to Claude format — inbound = user, outbound = assistant
-    // Log raw types so we can see what GHL is sending
-    messages.forEach(m => {
-      console.log(`GHL msg — type: ${m.type}, messageType: ${m.messageType}, direction: ${m.direction}, body: "${m.body?.slice(0, 60)}"`);
-    });
-    return messages
-      .filter(m => m.body && m.body.trim())
+    // Step 3: map to Claude format — SMS only (exclude emails), reverse to chronological order
+    // GHL returns newest-first; we need oldest-first for Claude
+    const smsMessages = messages
+      .filter(m => m.body && m.body.trim() && m.messageType !== "TYPE_EMAIL" && m.type !== 3)
+      .reverse()
       .map(m => ({
         role: m.direction === "inbound" ? "user" : "assistant",
         content: m.body,
       }));
+    console.log(`Filtered to ${smsMessages.length} SMS messages (chronological order)`);
+    return smsMessages;
   } catch (err) {
     console.error("GHL history fetch error:", err);
     return [];
