@@ -255,7 +255,8 @@ async function getGHLConversationHistory(contactId) {
         role: m.direction === "inbound" ? "user" : "assistant",
         content: m.body,
       }));
-    console.log(`Filtered to ${smsMessages.length} SMS messages (chronological order)`);
+    console.log(`Filtered to ${smsMessages.length} SMS messages (chronological order):`);
+    smsMessages.forEach((m, i) => console.log(`  [${i+1}] ${m.role}: "${m.content?.slice(0, 80)}"`));
     return smsMessages;
   } catch (err) {
     console.error("GHL history fetch error:", err);
@@ -413,6 +414,11 @@ app.post("/chat", async (req, res) => {
     if (history.length) {
       const last = history[history.length - 1];
       console.log(`Last seeded message — role: ${last.role}, content: "${last.content?.slice(0, 80)}"`);
+    }
+    // GHL already stores the inbound message before firing the webhook,
+    // so the current message may already be the last item — drop it to avoid duplication
+    if (history.length && history[history.length - 1].role === "user" && history[history.length - 1].content === messageText) {
+      history.pop();
     }
     conversations.set(conversationKey, history);
   }
