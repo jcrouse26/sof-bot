@@ -93,7 +93,7 @@ async function getWorkshopDate() {
   return cachedWorkshopDate || nextSaturdayAt9amPT();
 }
 
-async function buildSystemPrompt() {
+async function buildSystemPrompt(triageResult = "INSCOPE") {
   const now = new Date();
   const workshopTime = await getWorkshopDate();
   const minutesUntil = Math.round((workshopTime - now) / 60000);
@@ -189,6 +189,8 @@ CRITICAL RULE: If a message is out of scope or you are unsure how to answer it, 
 
 READING CONTEXT: always read the full conversation history before responding. short replies like "yes", "no", "ok", "sure" are almost always a response to the most recent thing said — figure out what they're responding to before replying. never assume "yes" means "yes I have a question" if the prior message wasn't asking about questions.
 
+${triageResult === "SOCIAL" ? `CURRENT MESSAGE CONTEXT: this message has been classified as a casual social acknowledgment — not a real question and not a statement about whether they can attend. respond with a brief, warm reply only. do NOT ask about the replay, do NOT ask about next Saturday, do NOT ask if they have questions. just acknowledge warmly and leave it there.` : ""}
+
 remember: everyone texting has already registered, they are warm, be helpful, be human, be brief.`;
 }
 
@@ -244,9 +246,13 @@ async function getGHLConversationHistory(contactId) {
     const msgsData = await msgsRes.json();
     const messages = msgsData?.messages?.messages || msgsData?.messages || [];
 
-    // Step 3: map to Claude format — inbound = user, outbound = assistant, SMS only
+    // Step 3: map to Claude format — inbound = user, outbound = assistant
+    // Log raw types so we can see what GHL is sending
+    messages.forEach(m => {
+      console.log(`GHL msg — type: ${m.type}, messageType: ${m.messageType}, direction: ${m.direction}, body: "${m.body?.slice(0, 60)}"`);
+    });
     return messages
-      .filter(m => m.body && (m.messageType === "SMS" || m.type === 1 || m.type === 2))
+      .filter(m => m.body && m.body.trim())
       .map(m => ({
         role: m.direction === "inbound" ? "user" : "assistant",
         content: m.body,
@@ -418,7 +424,7 @@ app.post("/chat", async (req, res) => {
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-5",
       max_tokens: 1000,
-      system: await buildSystemPrompt(),
+      system: await buildSystemPrompt(triageResult),
       messages: conversation.slice(-20),
     });
     reply = response.content[0].text;
