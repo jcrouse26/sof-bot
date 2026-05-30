@@ -111,8 +111,10 @@ async function buildSystemPrompt() {
     timeContext = `The workshop is currently live right now. If someone messages, let them know it already started and give them the Zoom link.`;
   } else if (minutesUntil <= -120) {
     timeContext = `The workshop has already ended. If someone messages, let them know it's over and mention the replay or next workshop.`;
+  } else if (!isWorkshopDay && minutesUntil <= 60 * 24) {
+    timeContext = `The workshop is TOMORROW (${workshopDateLabel}) at 9am pt — not today but it IS tomorrow. Do not correct anyone who says "tomorrow." Keep energy warm and excited.`;
   } else if (!isWorkshopDay) {
-    timeContext = `The workshop is not today — it is coming up on ${workshopDateLabel}. Do NOT say things like "this morning" or "today." Keep energy warm and anticipatory.`;
+    timeContext = `The workshop is coming up on ${workshopDateLabel} — not today, not tomorrow, still a few days out. Keep energy warm and anticipatory.`;
   } else if (minutesUntil > 90) {
     timeContext = `Today IS the day of the workshop (${workshopDateLabel}) but it is still a few hours away. The Zoom link will be texted out this morning. Keep energy excited.`;
   } else {
