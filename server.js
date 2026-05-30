@@ -404,6 +404,10 @@ app.post("/chat", async (req, res) => {
   if (!conversations.has(conversationKey)) {
     const history = await getGHLConversationHistory(contactId);
     console.log(`Seeded ${history.length} messages from GHL for contact ${contactId}`);
+    if (history.length) {
+      const last = history[history.length - 1];
+      console.log(`Last seeded message — role: ${last.role}, content: "${last.content?.slice(0, 80)}"`);
+    }
     conversations.set(conversationKey, history);
   }
   const conversation = conversations.get(conversationKey);
