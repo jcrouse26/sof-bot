@@ -494,6 +494,56 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+app.get("/invite.ics", async (req, res) => {
+  const attendeeEmail = req.query.email || "";
+  const attendeeName = req.query.name || attendeeEmail;
+  const workshopTime = await getWorkshopDate();
+  const zoomUrl = process.env.ZOOM_JOIN_URL || "https://us06web.zoom.us/j/89066020696";
+
+  const fmt = (d) => d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+  const dtstart = fmt(workshopTime);
+  const dtend = fmt(new Date(workshopTime.getTime() + 90 * 60 * 1000));
+  const dtstamp = fmt(new Date());
+  const uid = `big-three-${workshopTime.toISOString().split("T")[0]}@saintsofflow.com`;
+
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Saints of Flow//Big Three Workshop//EN",
+    "CALSCALE:GREGORIAN",
+    "METHOD:REQUEST",
+    "BEGIN:VEVENT",
+    `DTSTAMP:${dtstamp}`,
+    `DTSTART:${dtstart}`,
+    `DTEND:${dtend}`,
+    "SUMMARY:The Big Three Mastery Workshop",
+    `UID:${uid}`,
+    "ORGANIZER;CN=Jason Crouse:mailto:jason@saintsofflow.com",
+    attendeeEmail
+      ? `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN=${attendeeName}:mailto:${attendeeEmail}`
+      : "",
+    `DESCRIPTION:Join Jason Crouse for The Big Three Mastery Workshop — mastering career\\, love\\, and confidence.\\n\\nJoin via Zoom:\\n${zoomUrl}`,
+    `LOCATION:${zoomUrl}`,
+    "STATUS:CONFIRMED",
+    "BEGIN:VALARM",
+    "TRIGGER:-PT60M",
+    "ACTION:DISPLAY",
+    "DESCRIPTION:The Big Three Mastery Workshop starts in 1 hour!",
+    "END:VALARM",
+    "BEGIN:VALARM",
+    "TRIGGER:-PT10M",
+    "ACTION:DISPLAY",
+    "DESCRIPTION:The Big Three Mastery Workshop starts in 10 minutes!",
+    "END:VALARM",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].filter(Boolean).join("\r\n");
+
+  res.setHeader("Content-Type", "text/calendar; charset=utf-8; method=REQUEST");
+  res.setHeader("Content-Disposition", 'attachment; filename="big-three-workshop.ics"');
+  res.send(lines);
+});
+
 app.post("/reset", (req, res) => {
   conversations.clear();
   res.json({ ok: true });
