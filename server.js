@@ -1,5 +1,31 @@
 import express from "express";
 import Anthropic from "@anthropic-ai/sdk";
+import pg from "pg";
+
+const { Pool } = pg;
+const db = process.env.DATABASE_URL
+  ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+  : null;
+
+async function setupDb() {
+  if (!db) { console.log("No DATABASE_URL — skipping DB setup"); return; }
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS post_webinar_followups (
+      id SERIAL PRIMARY KEY,
+      contact_id TEXT NOT NULL,
+      contact_name TEXT,
+      contact_phone TEXT,
+      last_bot_message TEXT,
+      sent_at TIMESTAMPTZ DEFAULT NOW(),
+      nudge1_sent BOOLEAN DEFAULT FALSE,
+      nudge2_sent BOOLEAN DEFAULT FALSE,
+      responded BOOLEAN DEFAULT FALSE,
+      closed BOOLEAN DEFAULT FALSE
+    )
+  `);
+  console.log("DB ready");
+}
+setupDb();
 
 const app = express();
 app.use(express.json());
