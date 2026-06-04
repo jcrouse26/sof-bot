@@ -517,6 +517,28 @@ app.post("/chat", async (req, res) => {
 
   conversation.push({ role: "assistant", content: reply });
 
+  // If we're in post-webinar mode, track this in the DB for follow-up cadence
+  const isPostWebinar = conversation.some(m =>
+    m.role === "assistant" && m.content?.toLowerCase().includes("reply with the number that fits best")
+  );
+  if (isPostWebinar && db && contactId) {
+    try {
+      // Mark any existing open row as responded, then upsert with latest bot message
+      await db.query(
+        `UPDATE post_webinar_followups SET responded = TRUE WHERE contact_id = $1 AND closed = FALSE AND responded = FALSE`,
+        [contactId]
+      );
+      await db.query(
+        `INSERT INTO post_webinar_followups (contact_id, contact_name, contact_phone, last_bot_message, sent_at)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        [contactId, contactName || "", contactPhone || "", reply]
+      );
+      console.log(`Post-webinar followup logged to DB for ${contactId}`);
+    } catch (err) {
+      console.error("DB write error:", err);
+    }
+  }
+
   // Log to Google Sheet (fire and forget)
   logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triageResult, reply, nextWeekSignup });
 
@@ -827,6 +849,69 @@ async function loadSeed(){
 </body>
 </html>`);
 });
+
+async function runFollowUpScheduler() {
+  if (!db) return;
+  try {
+    const now = new Date();
+    const rows = await db.query(
+      `SELECT * FROM post_webinar_followups WHERE responded = FALSE AND closed = FALSE`
+    );
+
+    for (const row of rows.rows) {
+      const minutesSince = (now - new Date(row.sent_at)) / 60000;
+      const contactId = row.contact_id;
+      const history = await getGHLConversationHistory(contactId);
+
+      // Check if they've replied since the bot last messaged
+      const lastBotIdx = history.map(m => m.content).lastIndexOf(row.last_bot_message);
+      const repliedSince = lastBotIdx !== -1 && history.slice(lastBotIdx + 1).some(m => m.role === "user");
+
+      if (repliedSince) {
+        await db.query(`UPDATE post_webinar_followups SET responded = TRUE WHERE id = $1`, [row.id]);
+        console.log(`Follow-up closed — ${contactId} replied`);
+        continue;
+      }
+
+      // Nudge 1: a lone "?" after ~2 hours
+      if (!row.nudge1_sent && minutesSince >= 120) {
+        console.log(`Sending nudge 1 to ${contactId}`);
+        await sendGHLReply(contactId, "?");
+        await db.query(`UPDATE post_webinar_followups SET nudge1_sent = TRUE, sent_at = NOW() WHERE id = $1`, [row.id]);
+        continue;
+      }
+
+      // Nudge 2: Voss no-oriented after ~24 hours
+      if (row.nudge1_sent && !row.nudge2_sent && minutesSince >= 1440) {
+        const history2 = await getGHLConversationHistory(contactId);
+        const system = await buildSystemPrompt("INSCOPE");
+        const response = await anthropic.messages.create({
+          model: "claude-sonnet-4-5",
+          max_tokens: 200,
+          system: system + "\n\nWrite a single short follow-up text in the Chris Voss no-oriented style. Something like 'is it okay if I take your name off our list for this round?' — low pressure, gives them an easy out. One sentence max.",
+          messages: history2.slice(-10),
+        });
+        const nudge2 = response.content[0].text.trim();
+        await sendGHLReply(contactId, nudge2);
+        await db.query(`UPDATE post_webinar_followups SET nudge2_sent = TRUE, sent_at = NOW() WHERE id = $1`, [row.id]);
+        console.log(`Sent nudge 2 to ${contactId}: "${nudge2}"`);
+        continue;
+      }
+
+      // After nudge 2 with no response for 24 more hours — send closing message and close
+      if (row.nudge2_sent && minutesSince >= 1440) {
+        await sendGHLReply(contactId, "hey, totally okay — we'll take you off for this round but we'll keep you in the loop if any spots open up in the future 🙏");
+        await db.query(`UPDATE post_webinar_followups SET closed = TRUE WHERE id = $1`, [row.id]);
+        console.log(`Follow-up closed (no response) for ${contactId} — closing message sent`);
+      }
+    }
+  } catch (err) {
+    console.error("Scheduler error:", err);
+  }
+}
+
+// Run scheduler every hour
+setInterval(runFollowUpScheduler, 60 * 60 * 1000);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
