@@ -615,6 +615,20 @@ app.get("/invite.ics", async (req, res) => {
   res.send(lines);
 });
 
+app.get("/conversation/:contactId", async (req, res) => {
+  const { contactId } = req.params;
+  const history = await getGHLConversationHistory(contactId);
+  if (!history.length) return res.json({ contactId, messages: [], note: "No SMS history found" });
+  res.json({
+    contactId,
+    messages: history.map((m, i) => ({
+      index: i + 1,
+      role: m.role === "user" ? "THEM" : "US",
+      content: m.content,
+    })),
+  });
+});
+
 app.post("/reset", (req, res) => {
   conversations.clear();
   res.json({ ok: true });
