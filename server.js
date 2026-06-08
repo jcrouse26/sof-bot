@@ -119,6 +119,8 @@ async function getWorkshopDate() {
   return cachedWorkshopDate || nextSaturdayAt9amPT();
 }
 
+let timeContext = ""; // module-level so validator can access it
+
 async function buildSystemPrompt(triageResult = "INSCOPE") {
   const now = new Date();
   const workshopTime = await getWorkshopDate();
@@ -132,7 +134,6 @@ async function buildSystemPrompt(triageResult = "INSCOPE") {
   const workshopPT = new Date(workshopTime.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
   const isWorkshopDay = nowPT.toDateString() === workshopPT.toDateString();
 
-  let timeContext;
   if (minutesUntil <= 0 && minutesUntil > -120) {
     timeContext = `The workshop is currently live right now. If someone messages, let them know it already started and give them the Zoom link.`;
   } else if (minutesUntil <= -120) {
@@ -371,7 +372,39 @@ async function sendSlackAlert(contactInfo, message, contactId) {
   }
 }
 
-async function logToSheet({ contactName, contactPhone, contactId, message, triage, reply, nextWeekSignup }) {
+async function validateReply(reply, conversationHistory, timeContext) {
+  try {
+    const lastUserMessage = [...conversationHistory].reverse().find(m => m.role === "user")?.content || "";
+    const validation = await anthropic.messages.create({
+      model: "claude-sonnet-4-5",
+      max_tokens: 150,
+      system: `You are a quality checker for an SMS bot. Review the proposed reply and return a JSON object with:
+- "score": integer 1-10 (10 = perfect, 1 = do not send)
+- "issue": short description of the problem, or null if none
+
+Fail immediately (score 1-3) if:
+- Any internal system words appear in the reply: OUTOFSCOPE, INSCOPE, NEXT_WEEK_SIGNUP, or similar
+- The reply says "see you tomorrow" or "tomorrow" when the time context says the workshop is today or already ended
+- The reply makes no sense as a response to what the person said
+- The reply sounds robotic, corporate, or reveals it's a bot
+
+Score 7-10 if the reply is warm, contextually appropriate, and human-sounding.
+Respond with raw JSON only, no markdown.`,
+      messages: [{
+        role: "user",
+        content: `Time context: ${timeContext}\n\nLast message from person: "${lastUserMessage}"\n\nProposed reply: "${reply}"`
+      }]
+    });
+    const result = JSON.parse(validation.content[0].text.trim());
+    console.log(`Validation score: ${result.score}/10${result.issue ? ` — ${result.issue}` : ""}`);
+    return result;
+  } catch (err) {
+    console.error("Validation error:", err);
+    return { score: 10, issue: null }; // fail open — don't block on validator error
+  }
+}
+
+async function logToSheet({ contactName, contactPhone, contactId, message, triage, reply, nextWeekSignup, confidence }) {
   const webhookUrl = process.env.GOOGLE_SHEET_WEBHOOK;
   if (!webhookUrl) return;
   try {
@@ -388,6 +421,7 @@ async function logToSheet({ contactName, contactPhone, contactId, message, triag
         triage,
         reply: reply || "",
         nextWeekSignup: !!nextWeekSignup,
+        confidence: confidence ?? null,
       }),
     });
   } catch (err) {
@@ -490,8 +524,8 @@ app.post("/chat", async (req, res) => {
     return res.status(500).json({ error: "Bot failed" });
   }
 
-  // Safety net: if the main bot still returns OUTOFSCOPE, treat it the same way
-  if (reply.trim() === "OUTOFSCOPE") {
+  // Safety net: if the main bot still returns OUTOFSCOPE (alone or appended), treat it the same way
+  if (reply.trim() === "OUTOFSCOPE" || reply.includes("OUTOFSCOPE")) {
     const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
     await sendSlackAlert(contactInfo, messageText, contactId);
     conversation.pop();
@@ -501,6 +535,27 @@ app.post("/chat", async (req, res) => {
   // Check for next-week signup marker and strip it before sending
   const nextWeekSignup = reply.includes("[NEXT_WEEK_SIGNUP]");
   reply = reply.replace(/\[NEXT_WEEK_SIGNUP\]/g, "").trim();
+
+  // Pre-send validation — confidence check before anything goes out
+  const validation = await validateReply(reply, conversation, timeContext);
+  if (validation.score < 7) {
+    const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
+    console.log(`Low confidence reply blocked (${validation.score}/10): "${reply}"`);
+    try {
+      await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SLACK_TOKEN}` },
+        body: JSON.stringify({
+          channel: SLACK_ALERT_CHANNEL,
+          text: `⚠️ *Low confidence reply blocked (${validation.score}/10)*\n*Contact:* ${contactInfo}\n*Issue:* ${validation.issue || "unknown"}\n*Blocked reply:* "${reply}"\n*Their message:* "${messageText}"\n<https://app.gohighlevel.com/v2/location/${GHL_LOCATION_ID}/contacts/detail/${contactId}|View in GHL>\n\nPlease follow up manually.`,
+        }),
+      });
+    } catch (err) {
+      console.error("Slack validation alert error:", err);
+    }
+    logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triageResult, reply: `[BLOCKED: ${validation.score}/10] ${reply}`, nextWeekSignup, confidence: validation.score });
+    return res.json({ reply: null, blocked: true, confidence: validation.score, issue: validation.issue });
+  }
 
   if (nextWeekSignup && !nextWeekAlerted.has(conversationKey)) {
     nextWeekAlerted.add(conversationKey);
@@ -544,7 +599,7 @@ app.post("/chat", async (req, res) => {
   }
 
   // Log to Google Sheet (fire and forget)
-  logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triageResult, reply, nextWeekSignup });
+  logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triageResult, reply, nextWeekSignup, confidence: validation.score });
 
   const delay = typingDelay(reply);
   console.log(`Typing delay: ${Math.round(delay / 1000)}s for ${reply.length} char reply`);

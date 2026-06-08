@@ -14,6 +14,7 @@ const payload = {
   triage: "INSCOPE",
   reply: "hey! it starts at 9am pt this Saturday 😊",
   nextWeekSignup: false,
+  confidence: 9,
 };
 
 console.log("Sending to:", url);
