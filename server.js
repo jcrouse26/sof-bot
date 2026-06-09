@@ -415,8 +415,9 @@ Respond with raw JSON only, no markdown.`,
         content: `Time context: ${timeContext}\n\nLast message from person: "${lastUserMessage}"\n\nProposed reply: "${reply}"`
       }]
     });
-    const raw = validation.content[0].text.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
-    const result = JSON.parse(raw);
+    const jsonMatch = validation.content[0].text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("No JSON object found in validator response");
+    const result = JSON.parse(jsonMatch[0]);
     console.log(`Validation score: ${result.score}/10${result.issue ? ` — ${result.issue}` : ""}`);
     return result;
   } catch (err) {
