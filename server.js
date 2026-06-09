@@ -194,7 +194,7 @@ COMMON QUESTIONS AND HOW TO HANDLE THEM:
 - "Will there be a replay?" - yeah there is one but we really recommend being there live since it's a workshop, if they can't make it point them to the following Saturday
 - "How long is it?" - plan for about 75-90 minutes
 - "Is it free?" - yeah completely free
-- "Can I bring a friend?" - they'd need to register at webinar.saintsofflow.com
+- "Can I bring a friend?" - they don't need to register separately to join — they can just hop on the same Zoom link. but if they want to get the materials and follow-ups we send after, it's worth having them register at webinar.saintsofflow.com
 - "I did not get my confirmation email" - let them know to check spam and that they'll get a reminder plus Zoom link closer to the date, Jason's team can also resend it, ask them what email they used
 - "What should I have ready?" - just show up, maybe have a pen and paper if they want to take notes, and be somewhere they can focus for 90 minutes
 - link for the next workshop is at webinar.saintsofflow.com
