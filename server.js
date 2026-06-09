@@ -350,6 +350,26 @@ async function sendGHLReply(contactId, message) {
   });
 }
 
+async function addGHLTag(contactId, tag) {
+  if (!contactId || !GHL_API_KEY) return;
+  try {
+    const res = await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}/tags`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${GHL_API_KEY}`,
+        "Version": "2021-04-15",
+      },
+      body: JSON.stringify({ tags: [tag] }),
+    });
+    const data = await res.json();
+    console.log(`GHL tag "${tag}" added to ${contactId}:`, res.status);
+    return data;
+  } catch (err) {
+    console.error(`GHL tag error (${tag}):`, err);
+  }
+}
+
 async function sendSlackAlert(contactInfo, message, contactId) {
   const ghlLink = contactId ? `\n<https://app.gohighlevel.com/v2/location/${GHL_LOCATION_ID}/contacts/detail/${contactId}|View in GHL>` : "";
   const alertText = `🚨 *Bot handoff needed*\n*Contact:* ${contactInfo}\n*Their message:* "${message}"${ghlLink}\n\nThis was outside the bot's scope — please follow up manually.`;
@@ -395,7 +415,8 @@ Respond with raw JSON only, no markdown.`,
         content: `Time context: ${timeContext}\n\nLast message from person: "${lastUserMessage}"\n\nProposed reply: "${reply}"`
       }]
     });
-    const result = JSON.parse(validation.content[0].text.trim());
+    const raw = validation.content[0].text.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
+    const result = JSON.parse(raw);
     console.log(`Validation score: ${result.score}/10${result.issue ? ` — ${result.issue}` : ""}`);
     return result;
   } catch (err) {
@@ -538,23 +559,67 @@ app.post("/chat", async (req, res) => {
 
   // Pre-send validation — confidence check before anything goes out
   const validation = await validateReply(reply, conversation, timeContext);
+  let finalScore = validation.score;
+  let wasRetried = false;
+  let origScoreForLog = null;
+
   if (validation.score < 7) {
-    const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
-    console.log(`Low confidence reply blocked (${validation.score}/10): "${reply}"`);
+    const origScore = validation.score;
+    const origIssue = validation.issue;
+    const origReply = reply;
+    origScoreForLog = origScore;
+    console.log(`Low confidence (${origScore}/10) — regenerating. Issue: "${origIssue}"`);
+
     try {
-      await fetch("https://slack.com/api/chat.postMessage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SLACK_TOKEN}` },
-        body: JSON.stringify({
-          channel: SLACK_ALERT_CHANNEL,
-          text: `⚠️ *Low confidence reply blocked (${validation.score}/10)*\n*Contact:* ${contactInfo}\n*Issue:* ${validation.issue || "unknown"}\n*Blocked reply:* "${reply}"\n*Their message:* "${messageText}"\n<https://app.gohighlevel.com/v2/location/${GHL_LOCATION_ID}/contacts/detail/${contactId}|View in GHL>\n\nPlease follow up manually.`,
-        }),
+      const retryRes = await anthropic.messages.create({
+        model: "claude-sonnet-4-5",
+        max_tokens: 1000,
+        system: await buildSystemPrompt(triageResult),
+        messages: [
+          ...conversation.slice(-20),
+          { role: "assistant", content: origReply },
+          { role: "user", content: `[INTERNAL]: Your reply had a quality issue: "${origIssue || "quality too low"}". Please rewrite it.` },
+        ],
       });
+      const retryText = retryRes.content[0].text;
+      // Capture NEXT_WEEK_SIGNUP from retry if present
+      if (!nextWeekSignup && retryText.includes("[NEXT_WEEK_SIGNUP]")) {
+        // nextWeekSignup already declared above — let it flow through
+      }
+      const retryReply = retryText.replace(/\[NEXT_WEEK_SIGNUP\]/g, "").trim();
+      const retryValidation = await validateReply(retryReply, conversation, timeContext);
+      finalScore = retryValidation.score;
+      console.log(`Retry validation: ${finalScore}/10 (was ${origScore}/10)`);
+
+      if (finalScore >= 7) {
+        reply = retryReply;
+        wasRetried = true;
+        console.log(`Retry succeeded (${origScore}→${finalScore}/10): "${reply}"`);
+      }
     } catch (err) {
-      console.error("Slack validation alert error:", err);
+      console.error("Retry error:", err);
+      finalScore = 0; // treat retry error as a block
     }
-    logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triageResult, reply: `[BLOCKED: ${validation.score}/10] ${reply}`, nextWeekSignup, confidence: validation.score });
-    return res.json({ reply: null, blocked: true, confidence: validation.score, issue: validation.issue });
+
+    // If still below threshold after retry — block and alert
+    if (finalScore < 7) {
+      const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
+      console.log(`Blocking after failed retry (${origScore}→${finalScore}/10)`);
+      try {
+        await fetch("https://slack.com/api/chat.postMessage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${SLACK_TOKEN}` },
+          body: JSON.stringify({
+            channel: SLACK_ALERT_CHANNEL,
+            text: `⚠️ *Reply blocked after retry (${origScore}→${finalScore}/10)*\n*Contact:* ${contactInfo}\n*Issue:* ${origIssue || "unknown"}\n*Blocked reply:* "${origReply}"\n*Their message:* "${messageText}"\n<https://app.gohighlevel.com/v2/location/${GHL_LOCATION_ID}/contacts/detail/${contactId}|View in GHL>\n\nBoth attempts failed — please follow up manually.`,
+          }),
+        });
+      } catch (err) {
+        console.error("Slack validation alert error:", err);
+      }
+      logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triageResult, reply: `[BLOCKED after retry: ${origScore},${finalScore}] ${origReply}`, nextWeekSignup, confidence: origScore });
+      return res.json({ reply: null, blocked: true, confidence: origScore, retryScore: finalScore, issue: origIssue });
+    }
   }
 
   if (nextWeekSignup && !nextWeekAlerted.has(conversationKey)) {
@@ -572,6 +637,7 @@ app.post("/chat", async (req, res) => {
     } catch (err) {
       console.error("Slack next-week alert error:", err);
     }
+    await addGHLTag(contactId, "reschedule");
   }
 
   conversation.push({ role: "assistant", content: reply });
@@ -599,7 +665,9 @@ app.post("/chat", async (req, res) => {
   }
 
   // Log to Google Sheet (fire and forget)
-  logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triageResult, reply, nextWeekSignup, confidence: validation.score });
+  // If the reply was regenerated, prefix it so it's visible in the sheet
+  const sheetReply = wasRetried ? `[RETRIED ${origScoreForLog}→${finalScore}] ${reply}` : reply;
+  logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triageResult, reply: sheetReply, nextWeekSignup, confidence: finalScore });
 
   const delay = typingDelay(reply);
   console.log(`Typing delay: ${Math.round(delay / 1000)}s for ${reply.length} char reply`);
