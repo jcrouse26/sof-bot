@@ -650,15 +650,24 @@ app.post("/chat", async (req, res) => {
   if (isPostWebinar && db && contactId) {
     try {
       // Mark any existing open row as responded, then upsert with latest bot message
-      await db.query(
-        `UPDATE post_webinar_followups SET responded = TRUE WHERE contact_id = $1 AND closed = FALSE AND responded = FALSE`,
+      // If an open row already exists for this contact, just update the last bot message
+      // rather than inserting a duplicate
+      const existing = await db.query(
+        `SELECT id FROM post_webinar_followups WHERE contact_id = $1 AND closed = FALSE AND responded = FALSE`,
         [contactId]
       );
-      await db.query(
-        `INSERT INTO post_webinar_followups (contact_id, contact_name, contact_phone, last_bot_message, sent_at)
-         VALUES ($1, $2, $3, $4, NOW())`,
-        [contactId, contactName || "", contactPhone || "", reply]
-      );
+      if (existing.rows.length > 0) {
+        await db.query(
+          `UPDATE post_webinar_followups SET last_bot_message = $1 WHERE id = $2`,
+          [reply, existing.rows[0].id]
+        );
+      } else {
+        await db.query(
+          `INSERT INTO post_webinar_followups (contact_id, contact_name, contact_phone, last_bot_message, sent_at)
+           VALUES ($1, $2, $3, $4, NOW())`,
+          [contactId, contactName || "", contactPhone || "", reply]
+        );
+      }
       console.log(`Post-webinar followup logged to DB for ${contactId}`);
     } catch (err) {
       console.error("DB write error:", err);
