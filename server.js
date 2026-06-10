@@ -392,7 +392,7 @@ async function sendSlackAlert(contactInfo, message, contactId) {
   }
 }
 
-async function validateReply(reply, conversationHistory, timeContext) {
+async function validateReply(reply, conversationHistory, timeContext, systemPrompt) {
   try {
     const lastUserMessage = [...conversationHistory].reverse().find(m => m.role === "user")?.content || "";
     const validation = await anthropic.messages.create({
@@ -407,12 +407,14 @@ Fail immediately (score 1-3) if:
 - The reply says "see you tomorrow" or "tomorrow" when the time context says the workshop is today or already ended
 - The reply makes no sense as a response to what the person said
 - The reply sounds robotic, corporate, or reveals it's a bot
+- The reply states something that contradicts the bot's policy guidelines (e.g. wrong policy on replays, bringing guests, confirmation emails, etc.)
+- The reply confidently answers a question but gets the policy wrong based on the guidelines provided
 
-Score 7-10 if the reply is warm, contextually appropriate, and human-sounding.
+Score 7-10 only if the reply is warm, contextually appropriate, human-sounding, AND factually consistent with the bot's guidelines.
 Respond with raw JSON only, no markdown.`,
       messages: [{
         role: "user",
-        content: `Time context: ${timeContext}\n\nLast message from person: "${lastUserMessage}"\n\nProposed reply: "${reply}"`
+        content: `Bot policy guidelines:\n${systemPrompt}\n\n---\n\nTime context: ${timeContext}\n\nLast message from person: "${lastUserMessage}"\n\nProposed reply: "${reply}"`
       }]
     });
     const jsonMatch = validation.content[0].text.match(/\{[\s\S]*\}/);
@@ -530,13 +532,15 @@ app.post("/chat", async (req, res) => {
   }
   const conversation = conversations.get(conversationKey);
 
+  const builtSystemPrompt = await buildSystemPrompt(triageResult);
+
   let reply;
   try {
     conversation.push({ role: "user", content: messageText });
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-5",
       max_tokens: 1000,
-      system: await buildSystemPrompt(triageResult),
+      system: builtSystemPrompt,
       messages: conversation.slice(-20),
     });
     reply = response.content[0].text;
@@ -559,7 +563,7 @@ app.post("/chat", async (req, res) => {
   reply = reply.replace(/\[NEXT_WEEK_SIGNUP\]/g, "").trim();
 
   // Pre-send validation — confidence check before anything goes out
-  const validation = await validateReply(reply, conversation, timeContext);
+  const validation = await validateReply(reply, conversation, timeContext, builtSystemPrompt);
   let finalScore = validation.score;
   let wasRetried = false;
   let origScoreForLog = null;
@@ -575,7 +579,7 @@ app.post("/chat", async (req, res) => {
       const retryRes = await anthropic.messages.create({
         model: "claude-sonnet-4-5",
         max_tokens: 1000,
-        system: await buildSystemPrompt(triageResult),
+        system: builtSystemPrompt,
         messages: [
           ...conversation.slice(-20),
           { role: "assistant", content: origReply },
@@ -588,7 +592,7 @@ app.post("/chat", async (req, res) => {
         // nextWeekSignup already declared above — let it flow through
       }
       const retryReply = retryText.replace(/\[NEXT_WEEK_SIGNUP\]/g, "").trim();
-      const retryValidation = await validateReply(retryReply, conversation, timeContext);
+      const retryValidation = await validateReply(retryReply, conversation, timeContext, builtSystemPrompt);
       finalScore = retryValidation.score;
       console.log(`Retry validation: ${finalScore}/10 (was ${origScore}/10)`);
 
