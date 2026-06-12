@@ -1020,8 +1020,16 @@ async function runFollowUpScheduler() {
   if (!db) return;
   try {
     const now = new Date();
+    const workshopTime = await getWorkshopDate();
+
+    // Only run post-webinar follow-ups after the workshop has actually ended
+    if (now < workshopTime) {
+      console.log("Scheduler: workshop hasn't happened yet — skipping follow-up cadence");
+      return;
+    }
+
     const rows = await db.query(
-      `SELECT * FROM post_webinar_followups WHERE responded = FALSE AND closed = FALSE`
+      `SELECT * FROM post_webinar_followups WHERE responded = FALSE AND closed = FALSE AND sent_at IS NOT NULL`
     );
 
     for (const row of rows.rows) {
@@ -1064,11 +1072,24 @@ async function runFollowUpScheduler() {
         continue;
       }
 
-      // After nudge 2 with no response for 24 more hours — send closing message and close
+      // After nudge 2 with no response for 24 more hours — alert Slack instead of auto-sending
+      // closing message. A human should make this call.
       if (row.nudge2_sent && minutesSince >= 1440) {
-        await sendGHLReply(contactId, "hey, totally okay — we'll take you off for this round but we'll keep you in the loop if any spots open up in the future 🙏");
+        const contactInfo = row.contact_name || row.contact_phone || contactId;
+        console.log(`Follow-up cadence complete for ${contactId} — no response after nudge 2, alerting Slack`);
+        try {
+          await fetch("https://slack.com/api/chat.postMessage", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${SLACK_TOKEN}` },
+            body: JSON.stringify({
+              channel: SLACK_ALERT_CHANNEL,
+              text: `📭 *No response after follow-up cadence*\n*Contact:* ${contactInfo}\n<https://app.gohighlevel.com/v2/location/${GHL_LOCATION_ID}/contacts/detail/${contactId}|View in GHL>\n\nSent survey → nudge 1 → nudge 2. Still no reply. Recommend closing manually if appropriate.`,
+            }),
+          });
+        } catch (err) {
+          console.error("Slack scheduler alert error:", err);
+        }
         await db.query(`UPDATE post_webinar_followups SET closed = TRUE WHERE id = $1`, [row.id]);
-        console.log(`Follow-up closed (no response) for ${contactId} — closing message sent`);
       }
     }
   } catch (err) {
