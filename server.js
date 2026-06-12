@@ -128,6 +128,7 @@ async function buildSystemPrompt(triageResult = "INSCOPE") {
   const workshopDateLabel = workshopTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" });
   const nextWorkshopTime = new Date(workshopTime.getTime() + 7 * 24 * 60 * 60 * 1000);
   const nextWorkshopDateLabel = nextWorkshopTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" });
+  const nextWorkshopDayOfWeek = process.env.NEXT_WORKSHOP_DAY_OVERRIDE || nextWorkshopTime.toLocaleDateString("en-US", { weekday: "long", timeZone: "America/Los_Angeles" });
 
   // Compare calendar dates in PT so "22 hours away" doesn't get treated as "day of"
   const nowPT = new Date(now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
@@ -167,7 +168,7 @@ REPLAY POLICY:
 - only bring up the replay or next Saturday if someone uses explicit language like "I can't make it", "I won't be able to attend", "I'll miss it", "I'm not going to be able to join" — the words have to actually say they cannot attend
 - being in a different time zone, traveling, being in Europe, being busy, being unsure of their schedule — none of these count. if anything is ambiguous, assume they ARE attending and keep it warm and hopeful
 - if someone asks about the replay directly, answer it warmly — but do not volunteer it unprompted
-- if someone truly cannot make it (explicit): ask warmly "are you around next Saturday?" and leave it there
+- if someone truly cannot make it (explicit): ask warmly "are you around next ${nextWorkshopDayOfWeek}?" and leave it there
 - if they say yes to the next one: tell them warmly you'll get them added to the list — the next workshop is ${nextWorkshopDateLabel} at 9am pt, use that date — then add [NEXT_WEEK_SIGNUP] on its own line at the very end of your message (this tag gets stripped before sending, it's just for internal tracking)
 - if they say no to next Saturday or are unsure: mention the replay warmly and point them to webinar.saintsofflow.com to register for the next one
 - never push the replay unprompted — attending live is way better and that energy should come through
@@ -531,6 +532,16 @@ app.post("/chat", async (req, res) => {
     conversations.set(conversationKey, history);
   }
   const conversation = conversations.get(conversationKey);
+
+  // If this is a reply to the Big Three pre-webinar question (career/love/confidence),
+  // the bot should stand down — this is not a post-webinar survey reply
+  const isBigThreeContext = conversation.some(m =>
+    m.role === "assistant" && m.content?.includes("Reply with 1, 2, or 3")
+  );
+  if (isBigThreeContext && /^[123]$/.test(messageText.trim())) {
+    console.log(`Big Three pre-webinar reply detected (${messageText.trim()}) — bot standing down`);
+    return res.json({ reply: null, bigThreeReply: true });
+  }
 
   const builtSystemPrompt = await buildSystemPrompt(triageResult);
 
