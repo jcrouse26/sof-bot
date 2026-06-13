@@ -1,31 +1,5 @@
 import express from "express";
 import Anthropic from "@anthropic-ai/sdk";
-import pg from "pg";
-
-const { Pool } = pg;
-const db = process.env.DATABASE_URL
-  ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
-  : null;
-
-async function setupDb() {
-  if (!db) { console.log("No DATABASE_URL — skipping DB setup"); return; }
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS post_webinar_followups (
-      id SERIAL PRIMARY KEY,
-      contact_id TEXT NOT NULL,
-      contact_name TEXT,
-      contact_phone TEXT,
-      last_bot_message TEXT,
-      sent_at TIMESTAMPTZ DEFAULT NOW(),
-      nudge1_sent BOOLEAN DEFAULT FALSE,
-      nudge2_sent BOOLEAN DEFAULT FALSE,
-      responded BOOLEAN DEFAULT FALSE,
-      closed BOOLEAN DEFAULT FALSE
-    )
-  `);
-  console.log("DB ready");
-}
-setupDb();
 
 const app = express();
 app.use(express.json());
@@ -34,17 +8,16 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const SLACK_TOKEN = process.env.SLACK_BOT_TOKEN;
 const SLACK_ALERT_CHANNEL = "C0B5E3MBXST";
-
 const GHL_API_KEY = process.env.GHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
+const BOOKING_LINK = process.env.BOOKING_LINK || "https://api.leadconnectorhq.com/widget/bookings/tfcapplication";
 
-// Per-contact conversation memory
-const conversations = new Map();
+// Local-test-only conversation map — used when no contactId (tester UI)
+// Production always seeds fresh from GHL every request
+const testConversations = new Map();
 
-// Track contacts who've already had a next-week signup alert sent
-const nextWeekAlerted = new Set();
+// ─── Workshop date ───────────────────────────────────────────────────────────
 
-// Workshop date — fetched from the landing page and cached
 let cachedWorkshopDate = null;
 let workshopDateCachedAt = null;
 const CACHE_TTL = 6 * 60 * 60 * 1000; // refresh every 6 hours
@@ -92,14 +65,12 @@ async function fetchWorkshopDate() {
 
 function nextSaturdayAt9amPT() {
   const now = new Date();
-  // Get current time in PT
   const ptNow = new Date(now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
   const day = ptNow.getDay(); // 0=Sun, 6=Sat
   const daysUntilSat = day === 6 ? 7 : (6 - day); // if today is Sat, use next Sat
   const sat = new Date(ptNow);
   sat.setDate(ptNow.getDate() + daysUntilSat);
   sat.setHours(9, 0, 0, 0);
-  // Convert back to UTC-based Date using PT offset
   const month = sat.getMonth();
   const tzOffset = (month >= 2 && month <= 10) ? -7 : -8;
   return new Date(sat.getTime() - tzOffset * 60 * 60 * 1000);
@@ -115,13 +86,15 @@ async function getWorkshopDate() {
     cachedWorkshopDate = date;
     workshopDateCachedAt = now;
   }
-  // Fall back to next available Saturday at 9am PT if fetch failed
   return cachedWorkshopDate || nextSaturdayAt9amPT();
 }
 
-let timeContext = ""; // module-level so validator can access it
+// ─── System prompt ───────────────────────────────────────────────────────────
 
-async function buildSystemPrompt(triageResult = "INSCOPE") {
+// module-level so validateReply can access current context without re-building
+let timeContext = "";
+
+async function buildSystemPrompt() {
   const now = new Date();
   const workshopTime = await getWorkshopDate();
   const minutesUntil = Math.round((workshopTime - now) / 60000);
@@ -136,137 +109,126 @@ async function buildSystemPrompt(triageResult = "INSCOPE") {
   const isWorkshopDay = nowPT.toDateString() === workshopPT.toDateString();
 
   if (minutesUntil <= 0 && minutesUntil > -120) {
-    timeContext = `The workshop is currently live right now. If someone messages, let them know it already started and give them the Zoom link.`;
+    timeContext = `The workshop is live right now.`;
   } else if (minutesUntil <= -120) {
-    timeContext = `The workshop has already ended. If someone messages, let them know it's over and mention the replay or next workshop.`;
+    timeContext = `The workshop has already ended.`;
   } else if (!isWorkshopDay && minutesUntil <= 60 * 24) {
-    timeContext = `The workshop is tomorrow, ${workshopDateLabel}, at 9am pt. Keep energy warm and excited.`;
+    timeContext = `The workshop is tomorrow, ${workshopDateLabel}, at 9am pt.`;
   } else if (!isWorkshopDay) {
-    timeContext = `The workshop is coming up on ${workshopDateLabel} at 9am pt — still a few days out. Keep energy warm and anticipatory.`;
+    timeContext = `The workshop is coming up on ${workshopDateLabel} at 9am pt.`;
   } else if (minutesUntil > 90) {
-    timeContext = `Today IS the day of the workshop (${workshopDateLabel}) but it is still a few hours away. The Zoom link will be texted out this morning. Keep energy excited.`;
+    timeContext = `Today is the workshop day (${workshopDateLabel}) but it hasn't started yet.`;
   } else {
-    timeContext = `Right now it is ${minutesUntil} minutes until the workshop starts. Energy should be high — we're almost live! Say things like "almost time!" or "we're about to go live!"`;
+    timeContext = `${minutesUntil} minutes until the workshop starts — almost live!`;
   }
 
-  return `You are a helpful assistant for Saints of Flow, Jason Crouse's coaching brand. You are texting with someone who has already registered for the Big Three Mastery Workshop. Your job is to answer their questions in a warm, conversational, human way like a real person on the team, not a bot.
+  return `You are a warm, human-sounding assistant for Saints of Flow, Jason Crouse's coaching brand. You text with people who have registered for the Big Three Mastery Workshop.
 
-CURRENT TIME CONTEXT: ${timeContext}
+FIRST: Read the full conversation history before responding. The most recent outbound message (from us) tells you exactly what this person is responding to — let that guide everything.
 
-ABOUT THE WORKSHOP:
+TIME CONTEXT: ${timeContext}
+
+WORKSHOP DETAILS:
 - Name: The Big Three Mastery Workshop
 - Host: Jason Crouse
-- Date: ${workshopDateLabel}
-- Time: 9am pt (if someone asks about other time zones: 10am mt / 11am ct / 12pm et)
-- Cost: Free
-- Length: about 75-90 minutes (includes Q&A)
-- Platform: Zoom
-- How to join: they will receive a Zoom link via email and it will also be texted to them the morning of the event
-- What it covers: how to master the Big Three which are career, love, and confidence. specifically turning your calling into an actual career, attracting the right kind of love, and building real confidence by keeping promises to yourself
+- Date: ${workshopDateLabel} at 9am pt (10am mt / 11am ct / 12pm et)
+- Cost: free
+- Length: about 75-90 minutes including Q&A
+- Platform: Zoom — link sent via email and texted the morning of the event
+- What it covers: the Big Three — turning your calling into an actual career, attracting the right kind of love, building real confidence by keeping promises to yourself
 
-REPLAY POLICY:
-- only bring up the replay or next Saturday if someone uses explicit language like "I can't make it", "I won't be able to attend", "I'll miss it", "I'm not going to be able to join" — the words have to actually say they cannot attend
-- being in a different time zone, traveling, being in Europe, being busy, being unsure of their schedule — none of these count. if anything is ambiguous, assume they ARE attending and keep it warm and hopeful
-- if someone asks about the replay directly, answer it warmly — but do not volunteer it unprompted
-- if someone truly cannot make it (explicit): ask warmly "are you around next ${nextWorkshopDayOfWeek}?" and leave it there
-- if they say yes to the next one: tell them warmly you'll get them added to the list — the next workshop is ${nextWorkshopDateLabel} at 9am pt, use that date — then add [NEXT_WEEK_SIGNUP] on its own line at the very end of your message (this tag gets stripped before sending, it's just for internal tracking)
-- if they say no to next Saturday or are unsure: mention the replay warmly and point them to webinar.saintsofflow.com to register for the next one
-- never push the replay unprompted — attending live is way better and that energy should come through
+---
 
-TONE AND BEHAVIOR:
-- warm, genuinely enthusiastic, like a real person on Jason's team who actually likes their job
-- never sound bored, clipped, or like you're just checking a box
-- responses should feel complete and warm but never so long it feels like an email
-- occasionally use emojis naturally, rotate between 😊 😄 🙌🏼 🫶🏼, don't overdo it, maybe once per reply at most
-- it's okay to add a little warmth or encouragement at the end, like "so excited for you to be there" or "it's gonna be a good one"
-- occasionally use exclamation marks naturally, not on every sentence but enough to feel upbeat
-- never sound like a bot or use corporate language
-- do not use em dashes ever
-- often skip capitalizing the first word of a sentence, it feels more like a real text
-- use casual time formats like "9am" not "9:00am", use "pt" not "Pacific Time" or "PST"
-- write in a run-on, texty way, like how a real person actually texts
-- do not sell or pitch anything, this is purely logistics and info support
+HOW TO READ YOUR CONTEXT — look at what the last outbound message was, then respond accordingly:
 
-COMMON QUESTIONS AND HOW TO HANDLE THEM:
-- "What is it?" / "I don't remember signing up" / "remind me what this is" - describe what the workshop covers warmly (the Big Three: career, love, confidence), skip all the logistics like price, length, and Zoom link — just re-engage them on what it's about, end with something like "does that ring a bell?" or "does that sound familiar?"
-- if the prior context shows you just asked "does that sound familiar?" or "does that ring a bell?" and they reply "yes", "yeah", "yep", or similar — they're confirming they remember, NOT saying they have a question. respond warmly, like "awesome! so excited for you to be there 🙌🏼 any questions before we go live?" — never respond with "what's your question?" in this context
-- "What time does it start?" - 9am pt this coming Saturday, only mention other time zones if they explicitly ask
-- "Where do I join?" - check their email for the Zoom link, it'll also be texted to them day of
-- "Will there be a replay?" - yeah there is one but we really recommend being there live since it's a workshop, if they can't make it point them to the following Saturday
-- "How long is it?" - plan for about 75-90 minutes
-- "Is it free?" - yeah completely free
-- "Can I bring a friend?" - they don't need to register separately to join — they can just hop on the same Zoom link. but if they want to get the materials and follow-ups we send after, it's worth having them register at webinar.saintsofflow.com
-- "I did not get my confirmation email" - let them know to check spam and that they'll get a reminder plus Zoom link closer to the date, Jason's team can also resend it, ask them what email they used
-- "What should I have ready?" - just show up, maybe have a pen and paper if they want to take notes, and be somewhere they can focus for 90 minutes
-- link for the next workshop is at webinar.saintsofflow.com
+IF THE LAST OUTBOUND MESSAGE ASKED WHICH OF THE BIG THREE THEY'RE MOST FOCUSED ON:
+(something about career & purpose, love & relationships, confidence & self-trust — or "which area are you most focused on" — anything asking them to pick one of the three)
+→ This is our team's personal outreach after a missed call. Respond warmly and briefly no matter what they answered. Example: "awesome — I've actually been hearing that a lot. I think you're gonna love tomorrow 🙌🏼" Keep it short. Don't ask follow-up questions.
 
-IN SCOPE — questions you should answer:
-- anything about the workshop date, time, length, platform, how to join
-- replay questions
-- confirmation email / Zoom link questions
-- what the workshop covers
-- whether a friend can join
-- what to have ready
+IF THE LAST OUTBOUND MESSAGE WAS THE POST-WORKSHOP SURVEY:
+(asking them to reply 1, 2, 3, or 4 about where they're at after the workshop)
+→ Handle their reply:
 
-OUT OF SCOPE — questions you should NOT answer:
-- anything about The Flow Code, TFC, or coaching programs
-- pricing or cost of anything beyond the free workshop
-- personal advice or coaching questions
-- anything you are genuinely unsure about
+  Reply was 1 (didn't find it valuable):
+  Return exactly this and nothing else: [DND]
 
-CRITICAL RULE: If a message is out of scope or you are unsure how to answer it, respond with exactly this single word and nothing else: OUTOFSCOPE
+  Reply was 2 (couldn't pay full attention / wants to join the next one):
+  Warm reply, confirm them for next Saturday. Tell them you'll get them added for ${nextWorkshopDateLabel} at 9am pt.
+  End your message with [NEXT_WEEK_SIGNUP] on its own line.
 
-POST-WEBINAR MODE: if the conversation history contains a message asking them to reply with 1, 2, 3, or 4 about the workshop ("we'd genuinely love to hear where you're at after the workshop"), you are now in post-webinar follow-up mode. switch your entire approach — you are no longer answering logistics questions. your job is to understand where they're at and gently invite one small next step toward booking an enrollment call with Jason.
+  Reply was 3 (found it valuable but something is holding them back):
+  You're in a Chris Voss low-pressure enrollment conversation. Goal: understand their block and gently open the door to a next step — not to sell, not to convince.
+  - Round 1: One calibrated what/how question. Example: "what would need to be different for this to feel like the right time?"
+  - Round 2: Reflect back what they said, then go one level deeper with another what/how question.
+  - Round 3+: Move toward a call with a no-oriented question: "would you be opposed to a quick conversation with Jason just to explore it — no pressure at all, just to see if it's a fit?"
+  - If they say yes or seem open: give them the booking link (${BOOKING_LINK}), then add [HANDOFF] on its own line at the very end.
+  - If they say no or disengage: close warmly. "totally get it, I really appreciate you sharing that with me 🫶🏼"
+  One question at a time. Short messages. Zero selling energy.
 
-survey responses and how to handle them:
-- 1 (didn't find it valuable): get curious, not defensive. ask what felt off about it — one genuine question, no convincing. if they share, reflect it back warmly. never argue or re-pitch.
-- 2 (couldn't focus / wants next week): warm and easy. confirm them for next week's workshop, get them excited, done.
-- 3 (found it valuable but not ready): your warmest lead. do NOT pitch. ask one calibrated question about what's making now feel like the wrong time. use what/how questions — "what would need to be different for this to feel like the right time?" one question, then let it breathe.
-- 4 (valuable but financial barrier): acknowledge it genuinely first. don't immediately mention financing. ask what it would need to look like to feel possible. if they engage openly, you can mention there are flexible options and ask if they'd be open to a quick conversation to explore it.
+  Reply was 4 (found it valuable but finances are a barrier):
+  Send: "thanks so much for being real about that 🫶🏼 we never want finances to be the only thing standing in the way — we actually have some lower-cost and sliding scale options now. if you'd like to explore what might work for your budget, feel free to book a quick call: ${BOOKING_LINK}"
+  Then add [HANDOFF] on its own line.
 
-post-webinar tone and approach:
-- warm, genuinely curious, zero agenda, like a real person who actually cares about their answer
-- one question at a time, never two questions in one message
-- short messages — this is a text conversation, not a sales email
-- never use the word "invest" or pitch the Flow Code directly
-- use no-oriented questions in the Chris Voss style — "would you be opposed to..." or "is it okay if..." — these feel low pressure and keep people engaged
-- never push past what feels natural — if they're not moving, ask one more question and let it breathe
+  Reply was something outside 1-4 (a sentence, "5", unexpected text):
+  Respond warmly as if they're sharing feedback. Acknowledge what they said and ask one genuine follow-up question.
 
-when to hand off to a human:
-- if someone says yes to a call or asks directly about pricing, the Flow Code, or next steps — fire a Slack alert (reply OUTOFSCOPE) and stand down immediately. that conversation needs a human.
+IF THE LAST OUTBOUND MESSAGE ASKED THEM TO REPLY 1 TO CONFIRM THEIR BOOKING:
+→ They're confirming a call. Reply: "awesome! thanks so much — looking forward to meeting you 🙌🏼"
 
-FOR CONTEXT: Jason's team calls registrants on Friday afternoon to personally confirm their attendance and ask which of the Big Three they're most focused on. If someone asks whether we called them, this is why.
+ALL OTHER CONTEXTS (pre-workshop logistics, general check-ins, questions, no clear prior context):
+→ Pre-workshop assistant mode. Help them warmly with whatever they need.
 
-IMPORTANT: always match your sign-off to the actual time context. if the workshop is today and less than a few hours away, never say "see you tomorrow" — use "see you soon", "almost time!", "see you in a bit", or similar. the time context at the top of this prompt tells you exactly where you are.
+---
 
-READING CONTEXT: always read the full conversation history before responding. short replies like "yes", "no", "ok", "sure" are almost always a response to the most recent thing said — figure out what they're responding to before replying. never assume "yes" means "yes I have a question" if the prior message wasn't asking about questions.
+PRE-WORKSHOP — WHAT TO KNOW:
 
-${triageResult === "SOCIAL" ? `CURRENT MESSAGE CONTEXT: this message has been classified as a casual social acknowledgment — not a real question and not a statement about whether they can attend. respond with a brief, warm reply only. do NOT ask about the replay, do NOT ask about next Saturday, do NOT ask if they have questions. just acknowledge warmly and leave it there.` : ""}
+Common questions:
+- Time → 9am pt on ${workshopDateLabel}. Other time zones only if asked.
+- Zoom link → sent in their confirmation email, also texted the morning of.
+- Replay → there is one, but live is way better since it's interactive. Only mention if they ask or explicitly say they can't make it.
+- Friend → they can join on the same Zoom link, no separate registration needed. If they want the follow-up materials, they can register at webinar.saintsofflow.com.
+- Confirmation email → check spam. Jason's team can resend — ask what email they used.
+- Length → plan for 75-90 minutes.
+- Cost → completely free.
+- What to bring → just themselves, maybe pen and paper, somewhere they can focus.
+- Future workshops → webinar.saintsofflow.com
 
-remember: everyone texting has already registered, they are warm, be helpful, be human, be brief.`;
+Attendance situations:
+- Explicitly can't make it this week → ask warmly "are you around next ${nextWorkshopDayOfWeek}?" and leave it there.
+- Yes to next Saturday → confirm them for ${nextWorkshopDateLabel} at 9am pt. Add [NEXT_WEEK_SIGNUP] on its own line at the very end.
+- No to next Saturday or unsure → mention the replay warmly, point to webinar.saintsofflow.com.
+- Can NEVER do Saturdays (works every Saturday, can't do weekends, etc.) → warm reply, mention the replay, point to webinar.saintsofflow.com for future dates. Add [NEVER_SATURDAYS] on its own line at the very end. Do NOT ask about next Saturday.
+- AMBIGUOUS situation (traveling, driving somewhere, in Europe, might be busy — but hasn't explicitly said they can't attend) → ask one clarifying question: "oh nice — are you thinking you won't be able to make it, or might you be able to catch it from there?" Do NOT assume they can't attend. Never jump to the replay or next Saturday.
+- Replying to a missed call follow-up, can't call back right now → acknowledge warmly, let them know they can text any questions anytime. Do not ask about the workshop.
+
+Reading short replies:
+Always check what the last outbound message was before interpreting "yes", "no", "ok", "sure", "yes sir", "👍" — these are responses to whatever was just asked.
+- Prior message asked if they have questions + they say "yes" or "yes sir" → they have a question. Ask warmly what it is.
+- Prior message asked if they have questions + they say "no", "none", "no no questions" → they don't. Respond warmly. Never interpret this as "no I can't attend."
+- Prior message asked about next Saturday + they say "yes" → they're available. Confirm them.
+
+Out of scope → if they ask about The Flow Code, TFC, coaching program pricing, or anything you genuinely don't know: reply with exactly OUTOFSCOPE and nothing else.
+
+---
+
+TONE AND STYLE:
+- Warm, genuine — like a real person on Jason's team who actually cares
+- Texty and casual — run-on sentences, lowercase at the start sometimes, contractions always
+- No em dashes. No corporate language. Never sound like a bot.
+- Time formats: "9am" not "9:00am", "pt" not "Pacific Time" or "PST"
+- Emojis: natural and occasional, rotate 😊 😄 🙌🏼 🫶🏼 — max one per reply
+- Warm and complete but short enough to feel like a text, not an email
+- Match sign-off to time context — never say "see you tomorrow" if it's the day of or already ended
+
+INTERNAL TOKENS — stripped before sending, never visible to the contact:
+[NEXT_WEEK_SIGNUP] — bot confirmed them for next Saturday
+[NEVER_SATURDAYS] — contact can't do Saturdays, add GHL tag
+[DND] — survey reply 1, apply DND in GHL, no message sent
+[HANDOFF] — booking link was provided, alert the team
+OUTOFSCOPE — out of scope, alert the team, no message sent`;
 }
 
-const TRIAGE_PROMPT = `You are a triage assistant. Your only job is to classify an inbound text message for a workshop logistics bot.
-
-IN SCOPE: questions about workshop date, time, length, platform, Zoom link, replay, confirmation email, what the workshop covers, bringing a friend, what to prepare. Also includes: saying they can't make it, will be away, asking if there's another time or another session, anything about attending next week instead. Also includes: replies to a post-webinar survey — someone replying with a number (1, 2, 3, 4) or a short phrase like "I found it valuable" or "I couldn't focus" or "financially not there yet" or any response that sounds like feedback about the workshop they just attended. Also includes: any follow-up in a post-webinar conversation about what's blocking them, whether they want to get on a call, or anything about the Flow Code or working with Jason.
-
-SOCIAL: casual acknowledgments with no real question — things like "thanks", "ok", "sounds good", "got it", "👍", "great", "awesome", "perfect", or similar short responses.
-
-OPTOUT: the person wants to stop receiving messages — "stop", "unsubscribe", "take me off", "remove me", "opt out", "don't text me", "cancel", or any variation of asking to be removed from the list.
-
-OUT OF SCOPE: anything unrelated to the workshop or post-webinar follow-up. If there is any chance the message is a survey response or post-webinar reply, classify it as INSCOPE not OUTOFSCOPE.
-
-Reply with exactly one word: INSCOPE, SOCIAL, OUTOFSCOPE, or OPTOUT`;
-
-async function triage(message) {
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-5",
-    max_tokens: 10,
-    system: TRIAGE_PROMPT,
-    messages: [{ role: "user", content: message }],
-  });
-  return response.content[0].text.trim();
-}
+// ─── GHL helpers ─────────────────────────────────────────────────────────────
 
 async function getGHLConversationHistory(contactId) {
   if (!contactId || !GHL_API_KEY || !GHL_LOCATION_ID) return [];
@@ -285,9 +247,9 @@ async function getGHLConversationHistory(contactId) {
     const conversationId = searchData?.conversations?.[0]?.id;
     if (!conversationId) return [];
 
-    // Step 2: fetch the last 10 SMS messages
+    // Step 2: fetch the last 20 SMS messages (more context for multi-turn post-webinar conversations)
     const msgsRes = await fetch(
-      `https://services.leadconnectorhq.com/conversations/${conversationId}/messages?limit=10`,
+      `https://services.leadconnectorhq.com/conversations/${conversationId}/messages?limit=20`,
       {
         headers: {
           "Authorization": `Bearer ${GHL_API_KEY}`,
@@ -298,8 +260,8 @@ async function getGHLConversationHistory(contactId) {
     const msgsData = await msgsRes.json();
     const messages = msgsData?.messages?.messages || msgsData?.messages || [];
 
-    // Step 3: map to Claude format — SMS only (exclude emails), reverse to chronological order
-    // GHL returns newest-first; we need oldest-first for Claude
+    // Step 3: map to Claude format — SMS only, reverse to chronological order
+    // GHL returns newest-first; Claude needs oldest-first
     const smsMessages = messages
       .filter(m => m.body && m.body.trim() && m.messageType !== "TYPE_EMAIL" && m.type !== 3)
       .reverse()
@@ -307,8 +269,9 @@ async function getGHLConversationHistory(contactId) {
         role: m.direction === "inbound" ? "user" : "assistant",
         content: m.body,
       }));
-    console.log(`Filtered to ${smsMessages.length} SMS messages (chronological order):`);
-    smsMessages.forEach((m, i) => console.log(`  [${i+1}] ${m.role}: "${m.content?.slice(0, 80)}"`));
+
+    console.log(`GHL history: ${smsMessages.length} SMS messages for ${contactId}`);
+    smsMessages.forEach((m, i) => console.log(`  [${i + 1}] ${m.role}: "${m.content?.slice(0, 80)}"`));
     return smsMessages;
   } catch (err) {
     console.error("GHL history fetch error:", err);
@@ -343,11 +306,7 @@ async function sendGHLReply(contactId, message) {
       "Authorization": `Bearer ${GHL_API_KEY}`,
       "Version": "2021-04-15",
     },
-    body: JSON.stringify({
-      type: "SMS",
-      contactId: contactId,
-      message: message,
-    }),
+    body: JSON.stringify({ type: "SMS", contactId, message }),
   });
 }
 
@@ -363,37 +322,60 @@ async function addGHLTag(contactId, tag) {
       },
       body: JSON.stringify({ tags: [tag] }),
     });
-    const data = await res.json();
-    console.log(`GHL tag "${tag}" added to ${contactId}:`, res.status);
-    return data;
+    console.log(`GHL tag "${tag}" added to ${contactId}: ${res.status}`);
   } catch (err) {
     console.error(`GHL tag error (${tag}):`, err);
   }
 }
 
-async function sendSlackAlert(contactInfo, message, contactId) {
-  const ghlLink = contactId ? `\n<https://app.gohighlevel.com/v2/location/${GHL_LOCATION_ID}/contacts/detail/${contactId}|View in GHL>` : "";
-  const alertText = `🚨 *Bot handoff needed*\n*Contact:* ${contactInfo}\n*Their message:* "${message}"${ghlLink}\n\nThis was outside the bot's scope — please follow up manually.`;
+async function setGHLDND(contactId) {
+  if (!contactId || !GHL_API_KEY) return;
   try {
-    const res = await fetch("https://slack.com/api/chat.postMessage", {
-      method: "POST",
+    const res = await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}`, {
+      method: "PUT",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${SLACK_TOKEN}`,
+        "Authorization": `Bearer ${GHL_API_KEY}`,
+        "Version": "2021-07-28",
       },
-      body: JSON.stringify({
-        channel: SLACK_ALERT_CHANNEL,
-        text: alertText,
-      }),
+      body: JSON.stringify({ dnd: true }),
     });
-    const data = await res.json();
-    console.log("Slack response:", JSON.stringify(data));
+    console.log(`GHL DND set for ${contactId}: ${res.status}`);
   } catch (err) {
-    console.error("Slack alert error:", err);
+    console.error("GHL DND error:", err);
   }
 }
 
-async function validateReply(reply, conversationHistory, timeContext, systemPrompt) {
+// ─── Slack helpers ────────────────────────────────────────────────────────────
+
+function ghlLink(contactId) {
+  return contactId
+    ? `\n<https://app.gohighlevel.com/v2/location/${GHL_LOCATION_ID}/contacts/detail/${contactId}|View in GHL>`
+    : "";
+}
+
+async function sendSlackMessage(text) {
+  try {
+    await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${SLACK_TOKEN}` },
+      body: JSON.stringify({ channel: SLACK_ALERT_CHANNEL, text }),
+    });
+  } catch (err) {
+    console.error("Slack error:", err);
+  }
+}
+
+// kept for backward compat — wraps sendSlackMessage with the standard handoff format
+async function sendSlackAlert(contactInfo, message, contactId) {
+  await sendSlackMessage(
+    `🚨 *Bot handoff needed*\n*Contact:* ${contactInfo}\n*Their message:* "${message}"${ghlLink(contactId)}\n\nOut of scope — please follow up manually.`
+  );
+}
+
+// ─── Validation ───────────────────────────────────────────────────────────────
+
+async function validateReply(reply, conversationHistory, timeCtx, systemPrompt) {
   try {
     const lastUserMessage = [...conversationHistory].reverse().find(m => m.role === "user")?.content || "";
     const validation = await anthropic.messages.create({
@@ -404,30 +386,33 @@ async function validateReply(reply, conversationHistory, timeContext, systemProm
 - "issue": short description of the problem, or null if none
 
 Fail immediately (score 1-3) if:
-- Any internal system words appear in the reply: OUTOFSCOPE, INSCOPE, NEXT_WEEK_SIGNUP, or similar
+- Any internal token appears in the reply: OUTOFSCOPE, [DND], [NEXT_WEEK_SIGNUP], [NEVER_SATURDAYS], [HANDOFF]
 - The reply says "see you tomorrow" or "tomorrow" when the time context says the workshop is today or already ended
 - The reply makes no sense as a response to what the person said
 - The reply sounds robotic, corporate, or reveals it's a bot
-- The reply states something that contradicts the bot's policy guidelines (e.g. wrong policy on replays, bringing guests, confirmation emails, etc.)
-- The reply confidently answers a question but gets the policy wrong based on the guidelines provided
+- The reply states something that contradicts the bot's policy guidelines (wrong info on replays, bringing guests, confirmation emails, etc.)
+- The reply asks about next Saturday when the person said they can never do Saturdays, or when they were replying to a phone call follow-up (not saying they can't attend)
+- The reply confidently answers a question but gets the policy wrong
 
 Score 7-10 only if the reply is warm, contextually appropriate, human-sounding, AND factually consistent with the bot's guidelines.
 Respond with raw JSON only, no markdown.`,
       messages: [{
         role: "user",
-        content: `Bot policy guidelines:\n${systemPrompt}\n\n---\n\nTime context: ${timeContext}\n\nLast message from person: "${lastUserMessage}"\n\nProposed reply: "${reply}"`
+        content: `Bot policy guidelines:\n${systemPrompt}\n\n---\n\nTime context: ${timeCtx}\n\nLast message from person: "${lastUserMessage}"\n\nProposed reply: "${reply}"`
       }]
     });
     const jsonMatch = validation.content[0].text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("No JSON object found in validator response");
+    if (!jsonMatch) throw new Error("No JSON in validator response");
     const result = JSON.parse(jsonMatch[0]);
-    console.log(`Validation score: ${result.score}/10${result.issue ? ` — ${result.issue}` : ""}`);
+    console.log(`Validation: ${result.score}/10${result.issue ? ` — ${result.issue}` : ""}`);
     return result;
   } catch (err) {
     console.error("Validation error:", err);
     return { score: 10, issue: null }; // fail open — don't block on validator error
   }
 }
+
+// ─── Logging ──────────────────────────────────────────────────────────────────
 
 async function logToSheet({ contactName, contactPhone, contactId, message, triage, reply, nextWeekSignup, confidence }) {
   const webhookUrl = process.env.GOOGLE_SHEET_WEBHOOK;
@@ -443,7 +428,7 @@ async function logToSheet({ contactName, contactPhone, contactId, message, triag
         contactPhone: contactPhone || "",
         contactId: contactId || "",
         message,
-        triage,
+        triage: triage || "CONTEXTUAL",
         reply: reply || "",
         nextWeekSignup: !!nextWeekSignup,
         confidence: confidence ?? null,
@@ -453,6 +438,8 @@ async function logToSheet({ contactName, contactPhone, contactId, message, triag
     console.error("Sheet log error:", err);
   }
 }
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -464,14 +451,14 @@ function typingDelay(text) {
   if (len < 80) base = 14;
   else if (len < 200) base = 31;
   else base = 53;
-  // ±25% jitter so it never feels like a timer
   const jitter = base * 0.25;
   return Math.round((base + (Math.random() * jitter * 2 - jitter)) * 1000);
 }
 
+// ─── Main chat endpoint ───────────────────────────────────────────────────────
 
 app.post("/chat", async (req, res) => {
-  console.log("Incoming GHL payload:", JSON.stringify(req.body, null, 2));
+  console.log("Incoming payload:", JSON.stringify(req.body, null, 2));
 
   const contactId = req.body.customData?.contactId || req.body.contact_id;
   const contactName = req.body.customData?.contactName || req.body.full_name;
@@ -482,98 +469,80 @@ app.post("/chat", async (req, res) => {
   const messageText = (typeof rawMessage === "object" ? rawMessage?.body : rawMessage) || req.body.customData?.message || "";
   if (!messageText.trim()) return res.status(400).json({ error: "No message" });
 
-  console.log("Message text:", messageText);
-  console.log("Contact ID:", contactId);
+  console.log("Message:", messageText, "| Contact:", contactId);
 
-  // Check if a human has taken over — if so, stand down silently
+  // Human-active tag → stand down silently
   const humanActive = await hasHumanActiveTag(contactId);
   if (humanActive) {
-    console.log("human-active tag found, bot standing down");
+    console.log("human-active tag — bot standing down");
     return res.json({ reply: null, humanActive: true });
   }
 
-  // Triage the message
-  let triageResult;
-  try {
-    triageResult = await triage(messageText);
-  } catch (err) {
-    console.error("Triage error:", err);
-    return res.status(500).json({ error: "Triage failed" });
-  }
-
-  console.log("Triage result:", triageResult);
-
-  if (triageResult === "OPTOUT") {
-    console.log("Opt-out detected, bot going silent");
-    return res.json({ reply: null, optOut: true });
-  }
-
-  if (triageResult === "OUTOFSCOPE") {
-    const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
-    await sendSlackAlert(contactInfo, messageText, contactId);
-    return res.json({ reply: null, outOfScope: true });
-  }
-
-  // Get or create per-contact conversation history
-  // If we don't have it in memory, seed from GHL so restarts don't lose context
-  const conversationKey = contactId || "local-test";
-  if (!conversations.has(conversationKey)) {
-    const history = await getGHLConversationHistory(contactId);
-    console.log(`Seeded ${history.length} messages from GHL for contact ${contactId}`);
-    if (history.length) {
-      const last = history[history.length - 1];
-      console.log(`Last seeded message — role: ${last.role}, content: "${last.content?.slice(0, 80)}"`);
-    }
-    // GHL already stores the inbound message before firing the webhook,
-    // so the current message may already be the last item — drop it to avoid duplication
+  // ── Seed conversation history ────────────────────────────────────────────
+  // Production (has contactId): always fetch fresh from GHL — no stale in-memory state
+  // Local test (no contactId): use testConversations Map seeded via /seed
+  let history;
+  if (contactId) {
+    history = await getGHLConversationHistory(contactId);
+    // GHL may have already logged this inbound before firing the webhook — deduplicate
     if (history.length && history[history.length - 1].role === "user" && history[history.length - 1].content === messageText) {
       history.pop();
     }
-    conversations.set(conversationKey, history);
+  } else {
+    history = [...(testConversations.get("local-test") || [])];
   }
-  const conversation = conversations.get(conversationKey);
+  history.push({ role: "user", content: messageText });
 
-  // If the most recent bot message was the Big Three pre-webinar question,
-  // stand down — Jason handles these replies personally.
-  // Once any subsequent message has been sent, the bot resumes normally.
-  const lastBotMessage = [...conversation].reverse().find(m => m.role === "assistant")?.content || "";
-  if (lastBotMessage.includes("Reply with 1, 2, or 3")) {
-    console.log(`Big Three pre-webinar question was last bot message — standing down for direct reply`);
-    return res.json({ reply: null, bigThreeReply: true });
-  }
-
-  const builtSystemPrompt = await buildSystemPrompt(triageResult);
+  // ── Build system prompt and call Claude ─────────────────────────────────
+  const systemPrompt = await buildSystemPrompt();
 
   let reply;
   try {
-    conversation.push({ role: "user", content: messageText });
     const response = await anthropic.messages.create({
       model: "claude-sonnet-4-5",
       max_tokens: 1000,
-      system: builtSystemPrompt,
-      messages: conversation.slice(-20),
+      system: systemPrompt,
+      messages: history.slice(-20),
     });
     reply = response.content[0].text;
   } catch (err) {
     console.error("Claude error:", err);
-    conversation.pop();
     return res.status(500).json({ error: "Bot failed" });
   }
 
-  // Safety net: if the main bot still returns OUTOFSCOPE (alone or appended), treat it the same way
+  const contactInfo = contactName || contactPhone || contactId || "Unknown";
+
+  // ── Handle [DND] — survey reply 1, didn't find it valuable ──────────────
+  if (reply.trim() === "[DND]" || reply.includes("[DND]")) {
+    console.log("Survey reply 1 — applying DND");
+    await setGHLDND(contactId);
+    await sendSlackMessage(
+      `📋 *Survey: didn't find it valuable*\n*Contact:* ${contactInfo}${ghlLink(contactId)}\nDND applied. No reply sent.`
+    );
+    logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: "POST_SURVEY_DND", reply: "[DND applied]", nextWeekSignup: false, confidence: null });
+    return res.json({ reply: null, dnd: true });
+  }
+
+  // ── Handle OUTOFSCOPE ────────────────────────────────────────────────────
   if (reply.trim() === "OUTOFSCOPE" || reply.includes("OUTOFSCOPE")) {
-    const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
+    console.log("OUTOFSCOPE — alerting Slack");
     await sendSlackAlert(contactInfo, messageText, contactId);
-    conversation.pop();
+    logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: "OUTOFSCOPE", reply: "", nextWeekSignup: false, confidence: null });
     return res.json({ reply: null, outOfScope: true });
   }
 
-  // Check for next-week signup marker and strip it before sending
+  // ── Extract and strip all internal tokens ────────────────────────────────
   const nextWeekSignup = reply.includes("[NEXT_WEEK_SIGNUP]");
-  reply = reply.replace(/\[NEXT_WEEK_SIGNUP\]/g, "").trim();
+  const neverSaturdays = reply.includes("[NEVER_SATURDAYS]");
+  const handoff = reply.includes("[HANDOFF]");
+  reply = reply
+    .replace(/\[NEXT_WEEK_SIGNUP\]/g, "")
+    .replace(/\[NEVER_SATURDAYS\]/g, "")
+    .replace(/\[HANDOFF\]/g, "")
+    .trim();
 
-  // Pre-send validation — confidence check before anything goes out
-  const validation = await validateReply(reply, conversation, timeContext, builtSystemPrompt);
+  // ── Validate ─────────────────────────────────────────────────────────────
+  const validation = await validateReply(reply, history, timeContext, systemPrompt);
   let finalScore = validation.score;
   let wasRetried = false;
   let origScoreForLog = null;
@@ -583,115 +552,78 @@ app.post("/chat", async (req, res) => {
     const origIssue = validation.issue;
     const origReply = reply;
     origScoreForLog = origScore;
-    console.log(`Low confidence (${origScore}/10) — regenerating. Issue: "${origIssue}"`);
+    console.log(`Low confidence (${origScore}/10) — retrying. Issue: "${origIssue}"`);
 
     try {
       const retryRes = await anthropic.messages.create({
         model: "claude-sonnet-4-5",
         max_tokens: 1000,
-        system: builtSystemPrompt,
+        system: systemPrompt,
         messages: [
-          ...conversation.slice(-20),
+          ...history.slice(-20),
           { role: "assistant", content: origReply },
           { role: "user", content: `[INTERNAL]: Your reply had a quality issue: "${origIssue || "quality too low"}". Please rewrite it.` },
         ],
       });
-      const retryText = retryRes.content[0].text;
-      // Capture NEXT_WEEK_SIGNUP from retry if present
-      if (!nextWeekSignup && retryText.includes("[NEXT_WEEK_SIGNUP]")) {
-        // nextWeekSignup already declared above — let it flow through
-      }
-      const retryReply = retryText.replace(/\[NEXT_WEEK_SIGNUP\]/g, "").trim();
-      const retryValidation = await validateReply(retryReply, conversation, timeContext, builtSystemPrompt);
+      const retryReply = retryRes.content[0].text
+        .replace(/\[NEXT_WEEK_SIGNUP\]/g, "")
+        .replace(/\[NEVER_SATURDAYS\]/g, "")
+        .replace(/\[HANDOFF\]/g, "")
+        .trim();
+      const retryValidation = await validateReply(retryReply, history, timeContext, systemPrompt);
       finalScore = retryValidation.score;
-      console.log(`Retry validation: ${finalScore}/10 (was ${origScore}/10)`);
+      console.log(`Retry: ${finalScore}/10 (was ${origScore}/10)`);
 
       if (finalScore >= 7) {
         reply = retryReply;
         wasRetried = true;
-        console.log(`Retry succeeded (${origScore}→${finalScore}/10): "${reply}"`);
       }
     } catch (err) {
       console.error("Retry error:", err);
-      finalScore = 0; // treat retry error as a block
+      finalScore = 0;
     }
 
-    // If still below threshold after retry — block and alert
+    // Still below threshold after retry — block and alert
     if (finalScore < 7) {
-      const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
-      console.log(`Blocking after failed retry (${origScore}→${finalScore}/10)`);
-      try {
-        await fetch("https://slack.com/api/chat.postMessage", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${SLACK_TOKEN}` },
-          body: JSON.stringify({
-            channel: SLACK_ALERT_CHANNEL,
-            text: `⚠️ *Reply blocked after retry (${origScore}→${finalScore}/10)*\n*Contact:* ${contactInfo}\n*Issue:* ${origIssue || "unknown"}\n*Blocked reply:* "${origReply}"\n*Their message:* "${messageText}"\n<https://app.gohighlevel.com/v2/location/${GHL_LOCATION_ID}/contacts/detail/${contactId}|View in GHL>\n\nBoth attempts failed — please follow up manually.`,
-          }),
-        });
-      } catch (err) {
-        console.error("Slack validation alert error:", err);
-      }
-      logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triageResult, reply: `[BLOCKED after retry: ${origScore},${finalScore}] ${origReply}`, nextWeekSignup, confidence: origScore });
-      return res.json({ reply: null, blocked: true, confidence: origScore, retryScore: finalScore, issue: origIssue });
+      console.log(`Blocking after retry (${origScoreForLog}→${finalScore}/10)`);
+      await sendSlackMessage(
+        `⚠️ *Reply blocked after retry (${origScoreForLog}→${finalScore}/10)*\n*Contact:* ${contactInfo}\n*Issue:* ${validation.issue || "unknown"}\n*Their message:* "${messageText}"${ghlLink(contactId)}\n\nBoth attempts failed — please follow up manually.`
+      );
+      logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: "BLOCKED", reply: `[BLOCKED ${origScoreForLog}→${finalScore}] ${reply}`, nextWeekSignup, confidence: origScoreForLog });
+      return res.json({ reply: null, blocked: true, confidence: origScoreForLog, retryScore: finalScore });
     }
   }
 
-  if (nextWeekSignup && !nextWeekAlerted.has(conversationKey)) {
-    nextWeekAlerted.add(conversationKey);
-    const contactInfo = contactName || contactPhone || contactId || "Unknown contact";
-    try {
-      await fetch("https://slack.com/api/chat.postMessage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SLACK_TOKEN}` },
-        body: JSON.stringify({
-          channel: SLACK_ALERT_CHANNEL,
-          text: `📋 *Next week signup request*\n*Contact:* ${contactInfo}\n<https://app.gohighlevel.com/v2/location/${GHL_LOCATION_ID}/contacts/detail/${contactId}|View in GHL>\nThey said yes to next Saturday — add them to the list.`,
-        }),
-      });
-    } catch (err) {
-      console.error("Slack next-week alert error:", err);
-    }
+  // ── Fire side effects (reply is confirmed good) ──────────────────────────
+
+  if (nextWeekSignup) {
+    await sendSlackMessage(
+      `📋 *Next week signup*\n*Contact:* ${contactInfo}${ghlLink(contactId)}\nConfirmed for next Saturday — please add them to the list.`
+    );
     await addGHLTag(contactId, "reschedule");
   }
 
-  conversation.push({ role: "assistant", content: reply });
-
-  // If we're in post-webinar mode, track this in the DB for follow-up cadence
-  const isPostWebinar = conversation.some(m =>
-    m.role === "assistant" && m.content?.toLowerCase().includes("reply with the number that fits best")
-  );
-  if (isPostWebinar && db && contactId) {
-    try {
-      // Mark any existing open row as responded, then upsert with latest bot message
-      // If an open row already exists for this contact, just update the last bot message
-      // rather than inserting a duplicate
-      const existing = await db.query(
-        `SELECT id FROM post_webinar_followups WHERE contact_id = $1 AND closed = FALSE AND responded = FALSE`,
-        [contactId]
-      );
-      if (existing.rows.length > 0) {
-        await db.query(
-          `UPDATE post_webinar_followups SET last_bot_message = $1 WHERE id = $2`,
-          [reply, existing.rows[0].id]
-        );
-      } else {
-        await db.query(
-          `INSERT INTO post_webinar_followups (contact_id, contact_name, contact_phone, last_bot_message, sent_at)
-           VALUES ($1, $2, $3, $4, NOW())`,
-          [contactId, contactName || "", contactPhone || "", reply]
-        );
-      }
-      console.log(`Post-webinar followup logged to DB for ${contactId}`);
-    } catch (err) {
-      console.error("DB write error:", err);
-    }
+  if (neverSaturdays) {
+    await addGHLTag(contactId, "never-saturdays");
+    console.log(`never-saturdays tag added for ${contactId}`);
   }
 
-  // Log to Google Sheet (fire and forget)
-  // If the reply was regenerated, prefix it so it's visible in the sheet
+  if (handoff) {
+    await sendSlackMessage(
+      `🔥 *Ready for a call*\n*Contact:* ${contactInfo}\n*Their message:* "${messageText}"${ghlLink(contactId)}\nBot provided booking link — follow up to confirm the call.`
+    );
+  }
+
+  // Update local test history so the tester stays coherent across messages
+  if (!contactId) {
+    history.push({ role: "assistant", content: reply });
+    testConversations.set("local-test", history);
+  }
+
+  // ── Log and send ─────────────────────────────────────────────────────────
+  const triagetag = ["CONTEXTUAL", nextWeekSignup && "NEXT_WEEK", neverSaturdays && "NEVER_SAT", handoff && "HANDOFF"].filter(Boolean).join("+");
   const sheetReply = wasRetried ? `[RETRIED ${origScoreForLog}→${finalScore}] ${reply}` : reply;
-  logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triageResult, reply: sheetReply, nextWeekSignup, confidence: finalScore });
+  logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triagetag, reply: sheetReply, nextWeekSignup, confidence: finalScore });
 
   const delay = typingDelay(reply);
   console.log(`Typing delay: ${Math.round(delay / 1000)}s for ${reply.length} char reply`);
@@ -699,7 +631,7 @@ app.post("/chat", async (req, res) => {
   if (contactId) {
     // Respond to GHL webhook immediately so it doesn't time out,
     // then wait the delay before actually sending the SMS
-    res.json({ reply, outOfScope: false, sent: true });
+    res.json({ reply, sent: true });
     await sleep(delay);
     try {
       await sendGHLReply(contactId, reply);
@@ -708,9 +640,11 @@ app.post("/chat", async (req, res) => {
     }
   } else {
     // Local tester — no delay
-    res.json({ reply, outOfScope: false });
+    res.json({ reply });
   }
 });
+
+// ─── Other routes (unchanged) ─────────────────────────────────────────────────
 
 app.get("/invite.ics", async (req, res) => {
   const attendeeEmail = req.query.email || "";
@@ -777,14 +711,14 @@ app.get("/conversation/:contactId", async (req, res) => {
 });
 
 app.post("/reset", (req, res) => {
-  conversations.clear();
+  testConversations.clear();
   res.json({ ok: true });
 });
 
 app.post("/seed", (req, res) => {
   const { messages } = req.body;
   if (!Array.isArray(messages)) return res.status(400).json({ error: "messages must be an array" });
-  conversations.set("local-test", messages);
+  testConversations.set("local-test", messages);
   res.json({ ok: true, seeded: messages.length });
 });
 
@@ -898,7 +832,7 @@ const inputEl=document.getElementById("input");
 const sendBtn=document.getElementById("sendBtn");
 const emptyState=document.getElementById("emptyState");
 let isLoading=false;
-document.getElementById("seedInput").value="BOT: hey Mario it's Jason Crouse. Do you have any questions for me before our live workshop tomorrow? Start time is 9:00am PST";
+document.getElementById("seedInput").value="BOT: hey it's Jason Crouse's team. Do you have any questions before our live workshop tomorrow? Start time is 9am pt";
 function autoResize(el){el.style.height="auto";el.style.height=Math.min(el.scrollHeight,120)+"px"}
 function handleKey(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage()}}
 function addMessage(role,text){
@@ -943,11 +877,13 @@ async function sendMessage(){
     const data=await res.json();
     removeTyping();
     if(data.humanActive){
-      addMessage("system","HUMAN ACTIVE - bot standing down, human-active tag detected.");
-    } else if(data.optOut){
-      addMessage("system","OPT-OUT detected - confirmation sent, tagged opted-out in GHL.");
+      addMessage("system","HUMAN ACTIVE — bot standing down.");
+    } else if(data.dnd){
+      addMessage("system","DND — survey reply 1. DND applied in GHL, no message sent.");
     } else if(data.outOfScope){
-      addMessage("system","OUT OF SCOPE - bot went silent. Slack alert fired to #ghl-alerts.");
+      addMessage("system","OUT OF SCOPE — bot went silent. Slack alert fired.");
+    } else if(data.blocked){
+      addMessage("system","BLOCKED — reply failed validation twice ("+data.confidence+"→"+data.retryScore+"/10). Slack alerted.");
     } else {
       addMessage("bot",data.reply);
     }
@@ -1015,91 +951,7 @@ async function loadSeed(){
 </html>`);
 });
 
-async function runFollowUpScheduler() {
-  if (!db) return;
-  try {
-    const now = new Date();
-    const workshopTime = await getWorkshopDate();
-
-    // Only run post-webinar follow-ups after the workshop has actually ended
-    if (now < workshopTime) {
-      console.log("Scheduler: workshop hasn't happened yet — skipping follow-up cadence");
-      return;
-    }
-
-    const rows = await db.query(
-      `SELECT * FROM post_webinar_followups WHERE responded = FALSE AND closed = FALSE AND sent_at IS NOT NULL`
-    );
-
-    for (const row of rows.rows) {
-      const minutesSince = (now - new Date(row.sent_at)) / 60000;
-      const contactId = row.contact_id;
-      const history = await getGHLConversationHistory(contactId);
-
-      // Check if they've replied since the bot last messaged
-      const lastBotIdx = history.map(m => m.content).lastIndexOf(row.last_bot_message);
-      const repliedSince = lastBotIdx !== -1 && history.slice(lastBotIdx + 1).some(m => m.role === "user");
-
-      if (repliedSince) {
-        await db.query(`UPDATE post_webinar_followups SET responded = TRUE WHERE id = $1`, [row.id]);
-        console.log(`Follow-up closed — ${contactId} replied`);
-        continue;
-      }
-
-      // Nudge 1: a lone "?" after ~2 hours
-      if (!row.nudge1_sent && minutesSince >= 120) {
-        console.log(`Sending nudge 1 to ${contactId}`);
-        await sendGHLReply(contactId, "?");
-        await db.query(`UPDATE post_webinar_followups SET nudge1_sent = TRUE, sent_at = NOW() WHERE id = $1`, [row.id]);
-        continue;
-      }
-
-      // Nudge 2: Voss no-oriented after ~24 hours
-      if (row.nudge1_sent && !row.nudge2_sent && minutesSince >= 1440) {
-        const history2 = await getGHLConversationHistory(contactId);
-        const system = await buildSystemPrompt("INSCOPE");
-        const response = await anthropic.messages.create({
-          model: "claude-sonnet-4-5",
-          max_tokens: 200,
-          system: system + "\n\nWrite a single short follow-up text in the Chris Voss no-oriented style. Something like 'is it okay if I take your name off our list for this round?' — low pressure, gives them an easy out. One sentence max.",
-          messages: history2.slice(-10),
-        });
-        const nudge2 = response.content[0].text.trim();
-        await sendGHLReply(contactId, nudge2);
-        await db.query(`UPDATE post_webinar_followups SET nudge2_sent = TRUE, sent_at = NOW() WHERE id = $1`, [row.id]);
-        console.log(`Sent nudge 2 to ${contactId}: "${nudge2}"`);
-        continue;
-      }
-
-      // After nudge 2 with no response for 24 more hours — alert Slack instead of auto-sending
-      // closing message. A human should make this call.
-      if (row.nudge2_sent && minutesSince >= 1440) {
-        const contactInfo = row.contact_name || row.contact_phone || contactId;
-        console.log(`Follow-up cadence complete for ${contactId} — no response after nudge 2, alerting Slack`);
-        try {
-          await fetch("https://slack.com/api/chat.postMessage", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${SLACK_TOKEN}` },
-            body: JSON.stringify({
-              channel: SLACK_ALERT_CHANNEL,
-              text: `📭 *No response after follow-up cadence*\n*Contact:* ${contactInfo}\n<https://app.gohighlevel.com/v2/location/${GHL_LOCATION_ID}/contacts/detail/${contactId}|View in GHL>\n\nSent survey → nudge 1 → nudge 2. Still no reply. Recommend closing manually if appropriate.`,
-            }),
-          });
-        } catch (err) {
-          console.error("Slack scheduler alert error:", err);
-        }
-        await db.query(`UPDATE post_webinar_followups SET closed = TRUE WHERE id = $1`, [row.id]);
-      }
-    }
-  } catch (err) {
-    console.error("Scheduler error:", err);
-  }
-}
-
-// Run scheduler every hour
-setInterval(runFollowUpScheduler, 60 * 60 * 1000);
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("SOF Bot Tester running — open http://localhost:3000");
+  console.log(`SOF Bot running on port ${PORT}`);
 });
