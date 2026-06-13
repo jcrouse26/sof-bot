@@ -533,13 +533,12 @@ app.post("/chat", async (req, res) => {
   }
   const conversation = conversations.get(conversationKey);
 
-  // If this is a reply to the Big Three pre-webinar question (career/love/confidence),
-  // the bot should stand down — this is not a post-webinar survey reply
-  const isBigThreeContext = conversation.some(m =>
-    m.role === "assistant" && m.content?.includes("Reply with 1, 2, or 3")
-  );
-  if (isBigThreeContext && /^[123]$/.test(messageText.trim())) {
-    console.log(`Big Three pre-webinar reply detected (${messageText.trim()}) — bot standing down`);
+  // If the most recent bot message was the Big Three pre-webinar question,
+  // stand down — Jason handles these replies personally.
+  // Once any subsequent message has been sent, the bot resumes normally.
+  const lastBotMessage = [...conversation].reverse().find(m => m.role === "assistant")?.content || "";
+  if (lastBotMessage.includes("Reply with 1, 2, or 3")) {
+    console.log(`Big Three pre-webinar question was last bot message — standing down for direct reply`);
     return res.json({ reply: null, bigThreeReply: true });
   }
 
