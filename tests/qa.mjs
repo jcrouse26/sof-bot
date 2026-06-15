@@ -1010,6 +1010,66 @@ const TESTS = [
     check: (r) => r.reply && r.reply.toLowerCase().includes("tomorrow"),
   },
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // REAL-WORLD GAPS (sourced from SOF Bot Logs)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  {
+    id: "realworld-calendar-invite",
+    category: "Logistics",
+    name: "User requests a Google Calendar invite",
+    mockNow: T.dayBefore8pm,
+    seed: S.preWorkshop,
+    turns: ["Can you send me a Google Calendar invite for the workshop?"],
+    rubric: `Bot can't send calendar invites — that's not something the system does. Should acknowledge this warmly without making it awkward, and redirect to what IS available: the Zoom link will be texted morning of, and the confirmation email has the details. Must NOT claim a calendar invite will be sent. Must NOT go silent.`,
+  },
+  {
+    id: "realworld-workshop-not-worship",
+    category: "Logistics",
+    name: "User confused — 'workshop or worship?'",
+    mockNow: T.dayBefore8pm,
+    seed: S.preWorkshop,
+    turns: ["Wait, is this a workshop or worship? I didn't join last time because I thought it was religious"],
+    rubric: `User previously skipped because they thought it was a religious event. Bot should warmly clarify — it's a personal development workshop (career, love, confidence), not religious. Should reassure them they're in the right place. Must NOT be vague or fail to address the religious concern directly.`,
+  },
+  {
+    id: "realworld-who-is-this",
+    category: "Context Reading",
+    name: "User doesn't recognize the number — 'was this you calling?'",
+    mockNow: T.dayBefore8pm,
+    seed: S.weekOut,
+    turns: ["Was Saints of Flow you that reached out? Who is this?"],
+    rubric: `User doesn't recognize the sender. Bot should warmly introduce itself — this is Jason Crouse / Saints of Flow reaching out about the Big Three Mastery Workshop they registered for. Should feel like a natural, friendly re-introduction. Must NOT be robotic or just repeat the outbound message.`,
+  },
+  {
+    id: "realworld-couple-attending",
+    category: "Logistics",
+    name: "User wants to watch with their partner",
+    mockNow: T.dayBefore8pm,
+    seed: S.preWorkshop,
+    turns: ["My partner and I were thinking of watching this together — is that okay?"],
+    rubric: `Couple wants to attend together on the same Zoom. Bot should enthusiastically say yes — they're absolutely welcome to watch together. Warm and encouraging. Must NOT say anything that implies only one person can attend or that they need separate registrations.`,
+  },
+  {
+    id: "realworld-big-three-same-workshop",
+    category: "Context Reading",
+    name: "User asks if this is the same as the Big 3 they missed",
+    mockNow: T.dayBefore8pm,
+    seed: S.preWorkshop,
+    turns: ["I missed the Big 3 workshop a few months ago — is this the same thing or something different?"],
+    rubric: `User is asking whether the current workshop is the same as "the Big 3" they missed before. It IS the Big Three Mastery Workshop — same content. Bot should confirm this warmly and express excitement that they're getting a second shot at it. Must NOT be vague or say it's a different workshop.`,
+  },
+  {
+    id: "realworld-works-every-day",
+    category: "Attendance",
+    name: "Works every day — Monday through Sunday",
+    mockNow: T.dayBefore8pm,
+    seed: S.preWorkshop,
+    turns: ["I work every single day, Monday through Sunday. I want to do so many things but there's just no time."],
+    rubric: `Extreme scheduling conflict — they genuinely have no free days. Bot should lead with real empathy for what they shared. Must NOT push another Saturday or weekend date. Can mention the replay or webinar site as a long-term option. Tone matters as much as content here — this is someone venting, not just asking a logistics question.`,
+    check: (r) => r.cantMakeIt === true && r.neverWeekends === true,
+  },
+
 ];
 
 // ── LLM Scorer ────────────────────────────────────────────────────────────────
