@@ -1170,21 +1170,7 @@ function buildHtml(results) {
     if (fr.unsure) {
       validatorParts.push(`<span style="color:#8e44ad;font-weight:600">UNSURE</span> <span style="color:#888;font-size:11px">— bot flagged unknown, team alerted</span>`);
     } else if (fr.blocked) {
-      validatorParts.push(`<span style="color:#c0392b;font-weight:600">BLOCKED</span> (${fr.confidence}→${fr.retryScore}/10)`);
-      if (fr.validatorIssue) {
-        validatorParts.push(`<span style="color:#e67e22;font-size:11px">⚠ ${fr.validatorIssue}</span>`);
-      }
-    } else if (fr.validatorScore != null) {
-      const scoreColor = fr.validatorScore >= 8 ? "#27ae60" : fr.validatorScore >= 7 ? "#e67e22" : "#c0392b";
-      const scoreLabel = `<span style="color:${scoreColor};font-weight:600">${fr.validatorScore}/10</span>`;
-      if (fr.validatorRetried) {
-        validatorParts.push(`${scoreLabel} <span style="color:#888">(retried — original was ${fr.validatorOrigScore}/10)</span>`);
-      } else {
-        validatorParts.push(scoreLabel);
-      }
-      if (fr.validatorIssue) {
-        validatorParts.push(`<span style="color:#e67e22;font-size:11px">⚠ ${fr.validatorIssue}</span>`);
-      }
+      validatorParts.push(`<span style="color:#c0392b;font-weight:600">BLOCKED</span>`);
     }
     const tokenParts = [];
     if (fr.cantMakeIt)    tokenParts.push(`<span class="token-badge">CANT_MAKE_IT</span>`);
@@ -1192,16 +1178,10 @@ function buildHtml(results) {
     if (fr.neverSaturdays) tokenParts.push(`<span class="token-badge">NEVER_SATURDAYS</span>`);
     if (fr.handoff)       tokenParts.push(`<span class="token-badge">HANDOFF</span>`);
 
-    const rawReplyRow = fr.rawReply ? `
-    <div class="raw-reply-row">
-      <span class="meta-label">Pre-validator draft:</span>
-      <span class="raw-reply-text">${fr.rawReply}</span>
-    </div>` : "";
-
     const metaRow = (validatorParts.length || tokenParts.length) ? `
     <div class="validator-meta">
-      ${validatorParts.length ? `<span class="meta-label">Validator:</span> ${validatorParts.join(" ")}` : ""}
-      ${tokenParts.length ? `&nbsp;&nbsp;<span class="meta-label">Tokens:</span> ${tokenParts.join(" ")}` : ""}
+      ${validatorParts.length ? `${validatorParts.join(" ")}` : ""}
+      ${tokenParts.length ? `${validatorParts.length ? "&nbsp;&nbsp;" : ""}<span class="meta-label">Tokens:</span> ${tokenParts.join(" ")}` : ""}
     </div>` : "";
 
     return `
@@ -1214,7 +1194,6 @@ function buildHtml(results) {
   </div>
   <div class="test-body">
     ${metaRow}
-    ${rawReplyRow}
     <div class="section-label">Conversation</div>
     <div class="conversation">${convHtml}</div>
     <div class="section-label">Rubric</div>
