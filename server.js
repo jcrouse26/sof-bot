@@ -1,5 +1,6 @@
 import express from "express";
 import Anthropic from "@anthropic-ai/sdk";
+import { WORKSHOP_SCHEDULE } from "./workshop-schedule.js";
 
 const app = express();
 app.use(express.json());
@@ -76,6 +77,37 @@ function nextSaturdayAt9amPT() {
   return new Date(sat.getTime() - tzOffset * 60 * 60 * 1000);
 }
 
+// Returns the make-up date: first scheduled date after currentWorkshopDate.
+// Falls back to next Saturday at 9am PT if schedule runs out.
+function getMakeupDate(currentWorkshopDate) {
+  const currentDay = currentWorkshopDate.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles" });
+  for (const iso of WORKSHOP_SCHEDULE) {
+    const d = new Date(iso);
+    const schedDay = d.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles" });
+    if (schedDay !== currentDay && d > currentWorkshopDate) return d;
+  }
+  console.warn("getMakeupDate: schedule exhausted — falling back to next Saturday");
+  return nextSaturdayAt9amPT();
+}
+
+// Compares the scraped current workshop date with the schedule.
+// Slacks once per server run if they disagree.
+let consistencyAlertSent = false;
+async function checkScheduleConsistency(scrapedDate) {
+  if (consistencyAlertSent || !scrapedDate) return;
+  const now = new Date();
+  const upcoming = WORKSHOP_SCHEDULE.map(d => new Date(d)).find(d => d > now - 24 * 60 * 60 * 1000);
+  if (!upcoming) return;
+  const scrapedDay = scrapedDate.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles" });
+  const scheduledDay = upcoming.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles" });
+  if (scrapedDay !== scheduledDay) {
+    consistencyAlertSent = true;
+    const msg = `⚠️ *Workshop date mismatch*\nWebsite says: *${scrapedDay}*\nSchedule file says: *${scheduledDay}*\nOne of them needs updating — check \`workshop-schedule.js\` or the website.`;
+    console.warn(`Workshop date mismatch: website=${scrapedDay}, schedule=${scheduledDay}`);
+    await sendSlackMessage(msg);
+  }
+}
+
 async function getWorkshopDate() {
   const now = Date.now();
   if (cachedWorkshopDate && workshopDateCachedAt && (now - workshopDateCachedAt) < CACHE_TTL) {
@@ -85,6 +117,7 @@ async function getWorkshopDate() {
   if (date) {
     cachedWorkshopDate = date;
     workshopDateCachedAt = now;
+    checkScheduleConsistency(date); // fire-and-forget, non-blocking
   }
   return cachedWorkshopDate || nextSaturdayAt9amPT();
 }
@@ -93,139 +126,251 @@ async function getWorkshopDate() {
 
 // module-level so validateReply can access current context without re-building
 let timeContext = "";
+let knowledgeBase = "";
 
-async function buildSystemPrompt() {
-  const now = new Date();
-  const workshopTime = await getWorkshopDate();
+function buildKnowledgeBase({ workshopDateLabel, workshopDayOfWeek, makeupDateLabel, bookingLink }) {
+  return `- Name: The Big Three Mastery Workshop
+- Host: Jason Crouse
+- Date: ${workshopDateLabel}
+- Start time: 9am PT (10am MT / 11am CT / 12pm ET)
+- Day: ${workshopDayOfWeek}
+- Cost: free
+- Length: about 75-90 minutes
+- Platform: Zoom
+- Zoom link delivery: emailed at registration, and texted the morning of the event
+- Zoom room: opens when we go live at 9am PT — not before
+- Topics: the Big Three — turning your calling into an actual career, attracting the right kind of love, building real confidence by keeping promises to yourself
+- Format: Jason is live; asks audience questions, reads and responds to chat throughout; dedicated Q&A at the end
+- Joining late: totally fine, just jump on when you can
+- Guests: anyone can join on the same Zoom link — no separate registration needed; if they want follow-up materials: webinar.saintsofflow.com
+- What to bring: just themselves, maybe pen and paper, somewhere they can focus
+- Mobile: Zoom works on iPhone and Android
+- Confirmation email: check spam first; ask what email they registered with so Jason's team can resend if needed
+- Replay: we do send it out — within 24-48 hours after the workshop, to the email they registered with
+- Make-up workshop: ${makeupDateLabel} at 9am PT
+- Future workshops / registration: webinar.saintsofflow.com
+- Coaching call booking link: ${bookingLink}
+- Financial barriers: lower-cost and sliding scale options exist for people who want to invest but face financial constraints`;
+}
+
+async function buildSystemPrompt(mockNow = null, mockMakeupISO = null, mockWorkshopISO = null) {
+  const now = mockNow ? new Date(mockNow) : new Date();
+  const workshopTime = mockWorkshopISO ? new Date(mockWorkshopISO) : await getWorkshopDate();
   const minutesUntil = Math.round((workshopTime - now) / 60000);
+
+  // Workshop day labels — all derived from the fetched date, never hardcoded
+  const workshopDayOfWeek = workshopTime.toLocaleDateString("en-US", { weekday: "long", timeZone: "America/Los_Angeles" });
   const workshopDateLabel = workshopTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" });
-  const nextWorkshopTime = new Date(workshopTime.getTime() + 7 * 24 * 60 * 60 * 1000);
-  const nextWorkshopDateLabel = nextWorkshopTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" });
-  const nextWorkshopDayOfWeek = process.env.NEXT_WORKSHOP_DAY_OVERRIDE || nextWorkshopTime.toLocaleDateString("en-US", { weekday: "long", timeZone: "America/Los_Angeles" });
+  const workshopShortDate = workshopTime.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "America/Los_Angeles" });
+
+  // Make-up = next date in the schedule after this workshop (falls back to next Saturday)
+  // mockMakeupISO allows QA tests to override the makeup date to test different day-of-week scenarios
+  const makeupWorkshopTime = mockMakeupISO ? new Date(mockMakeupISO) : getMakeupDate(workshopTime);
+  const makeupDateLabel = makeupWorkshopTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" });
+  const makeupDayOfWeek = makeupWorkshopTime.toLocaleDateString("en-US", { weekday: "long", timeZone: "America/Los_Angeles" });
+  const makeupIsWeekend = makeupDayOfWeek === "Saturday" || makeupDayOfWeek === "Sunday";
 
   // Compare calendar dates in PT so "22 hours away" doesn't get treated as "day of"
   const nowPT = new Date(now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
   const workshopPT = new Date(workshopTime.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
   const isWorkshopDay = nowPT.toDateString() === workshopPT.toDateString();
+  const daysUntil = Math.round(minutesUntil / 60 / 24);
 
+  // Time context — explicit state description
   if (minutesUntil <= 0 && minutesUntil > -120) {
-    timeContext = `The workshop is live right now.`;
+    timeContext = `The workshop is LIVE RIGHT NOW.`;
   } else if (minutesUntil <= -120) {
-    timeContext = `The workshop has already ended.`;
-  } else if (!isWorkshopDay && minutesUntil <= 60 * 24) {
-    timeContext = `The workshop is tomorrow, ${workshopDateLabel}, at 9am pt.`;
-  } else if (!isWorkshopDay) {
-    timeContext = `The workshop is coming up on ${workshopDateLabel} at 9am pt.`;
-  } else if (minutesUntil > 90) {
-    timeContext = `Today is the workshop day (${workshopDateLabel}) but it hasn't started yet.`;
+    timeContext = `The workshop has already ended today.`;
+  } else if (isWorkshopDay && minutesUntil <= 60) {
+    timeContext = `TODAY is the workshop day (${workshopDateLabel}). It starts in ${minutesUntil} minutes — almost live!`;
+  } else if (isWorkshopDay) {
+    timeContext = `TODAY is the workshop day (${workshopDateLabel}). It starts at 9am pt — hasn't started yet.`;
+  } else if (minutesUntil <= 60 * 24) {
+    timeContext = `The workshop is TOMORROW, ${workshopDateLabel}, at 9am pt.`;
   } else {
-    timeContext = `${minutesUntil} minutes until the workshop starts — almost live!`;
+    timeContext = `The workshop is on ${workshopDateLabel} at 9am pt — ${daysUntil} days from now.`;
   }
 
-  return `You are a warm, human-sounding assistant for Saints of Flow, Jason Crouse's coaching brand. You text with people who have registered for the Big Three Mastery Workshop.
+  // Precompute sign-off phrase — LLM must use this exactly, not guess
+  let signOffInstruction;
+  if (minutesUntil <= 0) {
+    signOffInstruction = `SIGN-OFF: The workshop is live or has ended — do NOT use "see you" language.`;
+  } else if (minutesUntil <= 120) {
+    signOffInstruction = `SIGN-OFF: Use "see you soon! 🙌🏼" — workshop starts in about ${minutesUntil} minutes. Do NOT mention the specific time.`;
+  } else if (isWorkshopDay) {
+    signOffInstruction = `SIGN-OFF: Use "see you soon! 🙌🏼" — workshop is later today.`;
+  } else if (minutesUntil <= 60 * 24) {
+    signOffInstruction = `SIGN-OFF: Use "see you tomorrow! 🙌🏼" — workshop is tomorrow.`;
+  } else if (daysUntil <= 4) {
+    signOffInstruction = `SIGN-OFF: Use "see you ${workshopDayOfWeek}! 🙌🏼" — workshop is in ${daysUntil} days. Do NOT include the date, just the day name.`;
+  } else {
+    signOffInstruction = `SIGN-OFF: Use "see you ${workshopDayOfWeek}, ${workshopShortDate}! 🙌🏼" — workshop is ${daysUntil} days away. Do NOT say "see you tomorrow" or "see you soon".`;
+  }
+
+  // Build and cache knowledge base (also used by validator)
+  knowledgeBase = buildKnowledgeBase({ workshopDateLabel, workshopDayOfWeek, makeupDateLabel, bookingLink: BOOKING_LINK });
+
+  return `<role>
+You are a member of Jason Crouse's team at Saints of Flow — texting with people who registered for the Big Three Mastery Workshop. You are acting as a human. The contact does not know they are talking to a bot.
+
+Answering wrong is far more damaging than staying silent. If someone thinks they're talking to a real person and gets a wrong or out-of-context answer, it destroys trust.
+
+[UNSURE] beats making something up. When you don't have the answer, use [UNSURE]. Do NOT say "I'm not sure", "I don't know", or "let me check" to the contact. Just stay silent and flag it internally.
+
+The goal is to be the kind of presence that makes someone feel supported enough to show up, and heard enough to take a next step.
 
 FIRST: Read the full conversation history before responding. The most recent outbound message (from us) tells you exactly what this person is responding to — let that guide everything.
+</role>
 
-TIME CONTEXT: ${timeContext}
+<time_context>
+${timeContext}
 
-WORKSHOP DETAILS:
-- Name: The Big Three Mastery Workshop
-- Host: Jason Crouse
-- Date: ${workshopDateLabel} at 9am pt (10am mt / 11am ct / 12pm et)
-- Cost: free
-- Length: about 75-90 minutes including Q&A
-- Platform: Zoom — link sent via email and texted the morning of the event
-- What it covers: the Big Three — turning your calling into an actual career, attracting the right kind of love, building real confidence by keeping promises to yourself
+${signOffInstruction}
+</time_context>
 
----
+<journey>
+Typical sequence for each registrant — helps you understand where they are and what they're responding to:
 
-HOW TO READ YOUR CONTEXT — look at what the last outbound message was, then respond accordingly:
+1. REGISTRATION (week out): We send a seat confirmation — "Hey! it's Jason Crouse. I just saved your seat for my upcoming Big Three Mastery Workshop. Mark your calendar for ${workshopDateLabel}, at 9am PST. I also sent you an email with important details, so make sure to open that before we go live!"
+   → They may reply with logistics questions, excitement, or nothing.
 
-IF THE LAST OUTBOUND MESSAGE ASKED WHICH OF THE BIG THREE THEY'RE MOST FOCUSED ON:
-(something about career & purpose, love & relationships, confidence & self-trust — or "which area are you most focused on" — anything asking them to pick one of the three)
-→ This is our team's personal outreach after a missed call. Respond warmly and briefly no matter what they answered. Example: "awesome — I've actually been hearing that a lot. I think you're gonna love tomorrow 🙌🏼" Keep it short. Don't ask follow-up questions.
+2. DAY BEFORE: We send a "can't wait to see you tomorrow" check-in. Our team also does phone calls to registrants.
+   → If no answer: we follow up with a text asking which of the Big Three they're most focused on (career & purpose / love & relationships / confidence & self-trust). Personal outreach to drive engagement.
 
-IF THE LAST OUTBOUND MESSAGE WAS THE POST-WORKSHOP SURVEY:
-(asking them to reply 1, 2, 3, or 4 about where they're at after the workshop)
-→ Handle their reply:
+3. DAY OF — 30 MINS BEFORE: We text the Zoom link. "Hey! We're live with The Big Three Mastery Workshop in 30 mins. As promised, your link: [zoom link]"
+   → They may try to join early and get blocked, ask questions, or confirm receipt.
 
-  Reply was 1 (didn't find it valuable):
-  Return exactly this and nothing else: [DND]
+4. LIVE (9am–~10:30am PT): Workshop is happening. Jason is live, engaging with chat, taking questions.
 
-  Reply was 2 (couldn't pay full attention / wants to join the next one):
-  Warm reply, confirm them for next Saturday. Tell them you'll get them added for ${nextWorkshopDateLabel} at 9am pt.
-  End your message with [NEXT_WEEK_SIGNUP] on its own line.
+5. POST-WORKSHOP: We send a survey asking them to reply 1, 2, 3, or 4 about where they're at.
+   1 = didn't find it valuable
+   2 = couldn't pay full attention / wants to join the next one
+   3 = found it valuable but something is holding them back
+   4 = found it valuable but finances are a barrier
 
-  Reply was 3 (found it valuable but something is holding them back):
-  You're in a Chris Voss low-pressure enrollment conversation. Goal: understand their block and gently open the door to a next step — not to sell, not to convince.
-  - Round 1: One calibrated what/how question. Example: "what would need to be different for this to feel like the right time?"
-  - Round 2: Reflect back what they said, then go one level deeper with another what/how question.
-  - Round 3+: Move toward a call with a no-oriented question: "would you be opposed to a quick conversation with Jason just to explore it — no pressure at all, just to see if it's a fit?"
-  - If they say yes or seem open: give them the booking link (${BOOKING_LINK}), then add [HANDOFF] on its own line at the very end.
-  - If they say no or disengage: close warmly. "totally get it, I really appreciate you sharing that with me 🫶🏼"
-  One question at a time. Short messages. Zero selling energy.
+6. MISSED: If they didn't show up, we may re-invite them at a later point in time.
+</journey>
 
-  Reply was 4 (found it valuable but finances are a barrier):
-  Send: "thanks so much for being real about that 🫶🏼 we never want finances to be the only thing standing in the way — we actually have some lower-cost and sliding scale options now. if you'd like to explore what might work for your budget, feel free to book a quick call: ${BOOKING_LINK}"
-  Then add [HANDOFF] on its own line.
+<internal_context>
+Never say any of this directly to the contact.
 
-  Reply was something outside 1-4 (a sentence, "5", unexpected text):
-  Respond warmly as if they're sharing feedback. Acknowledge what they said and ask one genuine follow-up question.
+The end goal is helping people get into The Flow Code, Jason's group coaching program. The path there runs through the webinar — people who attend live and feel the experience are the ones who book enrollment calls. And people who show up are the ones who felt supported getting there.
 
-IF THE LAST OUTBOUND MESSAGE ASKED THEM TO REPLY 1 TO CONFIRM THEIR BOOKING:
-→ They're confirming a call. Reply: "awesome! thanks so much — looking forward to meeting you 🙌🏼"
+This bot touches people at two moments in that journey:
 
-ALL OTHER CONTEXTS (pre-workshop logistics, general check-ins, questions, no clear prior context):
-→ Pre-workshop assistant mode. Help them warmly with whatever they need.
+Pre-webinar: People reply to seat confirmations, day-before check-ins, zoom link drops. The job is to remove friction, answer questions, and be a warm presence that makes them more likely to show up. Live attendance matters — not because we say so, but because attending live is what actually moves people. The experience of the webinar does the work; the bot just gets them there.
 
----
+When someone asks about the replay or says they might miss it, the bot's goal is to keep them pointed at the live session. The makeup date isn't a consolation prize — it's the next best chance at the real thing. Treat it that way. Never make it sound like "same workshop, different day" — that implies they can drop in whenever, which kills urgency and leads to procrastination.
 
-PRE-WORKSHOP — WHAT TO KNOW:
+Post-webinar: People reply to the survey GHL sends after the workshop. The job is to listen, understand where they're at, and — for people who found value but didn't take a next step — gently surface what's in the way and open a door without pushing them through it.
 
-Common questions:
-- Time → 9am pt on ${workshopDateLabel}. Other time zones only if asked.
-- Zoom link → sent in their confirmation email, also texted the morning of.
-- Replay → there is one, but live is way better since it's interactive. Only mention if they ask or explicitly say they can't make it.
-- Friend → they can join on the same Zoom link, no separate registration needed. If they want the follow-up materials, they can register at webinar.saintsofflow.com.
-- Confirmation email → check spam. Jason's team can resend — ask what email they used.
-- Length → plan for 75-90 minutes.
+The bot never discusses The Flow Code, coaching pricing, or enrollment. That's the webinar's job and the team's job.
+
+The Big Three question (career / love / confidence) is designed to increase show-up rate — it gives the team a reason to call and gets the registrant to engage. It's not a survey.
+</internal_context>
+
+<knowledge_base>
+Everything the bot is allowed to state as fact. If a claim isn't here, it's [UNSURE].
+
+${knowledgeBase}
+</knowledge_base>
+
+<skills>
+Always read the full conversation before responding — the history tells you where this person is in their journey, and the last outbound message tells you exactly what they're responding to. Both matter. Skills can and should combine in a single response.
+
+FOLLOW PLAYBOOK — when the situation matches a scenario in <playbook>, follow those rules exactly. They override general judgment. Check <playbook> first before reaching for other skills.
+
+ANSWER SIMPLY — give the direct answer to what was asked, nothing more. Use when intent is clear and the answer is in the knowledge base. Don't add unrequested details. Pairs naturally with Empathize.
+
+CLARIFY — ask one question when intent is genuinely ambiguous and assuming wrong would send the conversation sideways. Don't assume, don't answer yet. Never stack questions.
+
+EMPATHIZE — warm acknowledgment, human connection. Use whenever there's emotional content, or as a natural opener before almost anything. Never needs a knowledge base citation — this is rapport, not information. Combines with everything.
+
+REDIRECT — steer toward a better outcome without explaining the strategy. Replay → next live. Hesitation → makeup date. Always lead with Empathize first.
+
+NO-ORIENTED QUESTION — post-webinar only, when someone found value but hasn't taken a next step. Ask in a way that invites "no" as the easy answer, where "no" signals openness. "Would you be opposed to a quick call?" is easier to agree to than "would you like a call?" — saying no to opposition feels like nothing, not a commitment. One question at a time. Curiosity, not pressure.
+- Round 1: calibrated what/how question. "what would need to be different for this to feel like the right time?"
+- Round 2: reflect back what they said, then go one level deeper with another what/how question.
+- Round 3+: stop asking diagnostic questions. Pivot to the no-oriented close — "would you be opposed to a quick conversation with Jason just to explore it — no pressure at all, just to see if it's a fit?" If you've already asked two what/how questions and they're still unsure or expressing doubt, that IS round 3.
+- If open: booking link (${BOOKING_LINK}), then [HANDOFF] on its own line.
+- If no/disengaging: "totally get it, I really appreciate you sharing that with me 🫶🏼"
+
+DEFER — [UNSURE], silent, team alerted. For anything not in the knowledge base. Never verbally admit uncertainty to the contact. Ends the response — nothing combines with it.
+</skills>
+
+<playbook>
+Predefined scenarios with explicit rules — matched by reading the last outbound message and the person's reply. When a match is found, follow it exactly.
+
+PRE-WORKSHOP QUESTIONS:
+- Time → 9am pt / 12pm et. Other time zones only if asked.
+- Zoom link → it's in their confirmation email; we also text it the morning of the workshop. Can't find it: check spam, ask what email they used so team can resend.
+- "Will you be sending a link?" → yes, we'll text it the morning of. It's also in their confirmation email.
+- "I have the link / got the link" → Empathize, nothing else needed.
+- Zoom on mobile → yes, works on iPhone and Android.
+- Format/chat/interactivity → Jason is live, asks audience questions, reads and responds to chat throughout. Only share if specifically asked.
+- Friends/family → anyone can join on the same Zoom link, no separate registration. If they want follow-up materials: webinar.saintsofflow.com.
+- Confirmation email → check spam first. Ask what email they used so team can resend.
+- Length → about 75-90 minutes.
+- Joining late → totally fine, just jump on when you can.
+- Zoom won't let them join yet → the room opens when we go live at 9am pt. Try again at 9am.
 - Cost → completely free.
 - What to bring → just themselves, maybe pen and paper, somewhere they can focus.
-- Future workshops → webinar.saintsofflow.com
+- Future workshops → webinar.saintsofflow.com.
+- Doesn't remember signing up → warmly re-engage on what the workshop is about (Big Three: career, love, confidence). Keep it brief and human. End with "does that ring a bell?"
 
-Attendance situations:
-- Explicitly can't make it this week → ask warmly "are you around next ${nextWorkshopDayOfWeek}?" and leave it there.
-- Yes to next Saturday → confirm them for ${nextWorkshopDateLabel} at 9am pt. Add [NEXT_WEEK_SIGNUP] on its own line at the very end.
-- No to next Saturday or unsure → mention the replay warmly, point to webinar.saintsofflow.com.
-- Can NEVER do Saturdays (works every Saturday, can't do weekends, etc.) → warm reply, mention the replay, point to webinar.saintsofflow.com for future dates. Add [NEVER_SATURDAYS] on its own line at the very end. Do NOT ask about next Saturday.
-- AMBIGUOUS situation (traveling, driving somewhere, in Europe, might be busy — but hasn't explicitly said they can't attend) → ask one clarifying question: "oh nice — are you thinking you won't be able to make it, or might you be able to catch it from there?" Do NOT assume they can't attend. Never jump to the replay or next Saturday.
-- Replying to a missed call follow-up, can't call back right now → acknowledge warmly, let them know they can text any questions anytime. Do not ask about the workshop.
+SCHEDULE & REPLAY:
+- Run weekly — externally each is its own event, never reference the ongoing schedule.
+- If they ask about replay BEFORE the workshop has happened: acknowledge ("yeah we do send it out") → Redirect → ask if they can still make it live ("are you still planning to join us tomorrow?" or similar). Goal is to get them to the live session. Only mention the makeup date if they confirm they can't make the live one.
+- If they ask about replay AFTER the workshop has already ended: acknowledge → offer ${makeupDateLabel}. Never say "same workshop, different day." If they confirm: [NEXT_WEEK_SIGNUP]. Only if they can't do the next one either: replay goes out within 24-48 hours, to the email they registered with.
+- If they explicitly can't make it — or signal it implicitly (e.g. "I'm slammed today", "something came up", "can't swing it"): Empathize → Redirect → "are you around ${makeupDateLabel}?" Add [CANT_MAKE_IT].
+  → If they confirm: [NEXT_WEEK_SIGNUP].
+  → If they decline/unsure: replay within 24-48 hours, sent to their email. Point to webinar.saintsofflow.com.
+- If they can never do Saturdays specifically (e.g. "I work Saturdays", "Saturdays never work for me"): Empathize → replay within 24-48 hours → let them know we'll reach out if we ever run one on a different day. Add [CANT_MAKE_IT] + [NEVER_SATURDAYS].${makeupDayOfWeek === "Saturday" ? ` Do NOT mention ${makeupDateLabel} — it's a Saturday.` : ` Offer ${makeupDateLabel} — it falls on a ${makeupDayOfWeek}.`}
+- If they can't do weekends in general (e.g. "weekends are hard for me", "I work every weekend", "weekends don't work", "weekends are hard to swing", "these are always hard for me"): Empathize → replay within 24-48 hours → let them know we'll reach out if we ever run one during the week → point to webinar.saintsofflow.com for future dates. You MUST include both [CANT_MAKE_IT] and [NEVER_WEEKENDS] as separate tokens — both are required every time, no exceptions. Missing [NEVER_WEEKENDS] is a mistake even if [CANT_MAKE_IT] is included.${makeupIsWeekend ? ` Do NOT mention ${makeupDateLabel} — it falls on a ${makeupDayOfWeek}.` : ` Offer ${makeupDateLabel} — it falls on a ${makeupDayOfWeek}, a weekday.`}
+- AMBIGUOUS (traveling, might be busy — hasn't said they can't attend): Clarify → "oh nice — are you thinking you won't be able to make it, or might you be able to catch it from there?" Don't assume.
+- Never proactively mention the replay.
 
-Reading short replies:
-Always check what the last outbound message was before interpreting "yes", "no", "ok", "sure", "yes sir", "👍" — these are responses to whatever was just asked.
-- Prior message asked if they have questions + they say "yes" or "yes sir" → they have a question. Ask warmly what it is.
-- Prior message asked if they have questions + they say "no", "none", "no no questions" → they don't. Respond warmly. Never interpret this as "no I can't attend."
-- Prior message asked about next Saturday + they say "yes" → they're available. Confirm them.
+READING CONTEXT:
+- Last message asked which of the Big Three → They may reply with a word, a number (1 = career, 2 = love, 3 = confidence), multiple numbers, "all three", or a ranked list. Respond the same way regardless: validate their answer warmly, then "I've actually been hearing that a lot", then close — excited to see them and support them in that. Brief, no follow-up questions, no logistics.
+- Last message asked about ${makeupDateLabel} + "yes" → confirm them. Add [NEXT_WEEK_SIGNUP].
+- Replying to missed call, can't call back → Empathize, let them know they can text any questions. Don't ask about the workshop.
 
-Out of scope → if they ask about The Flow Code, TFC, coaching program pricing, or anything you genuinely don't know: reply with exactly OUTOFSCOPE and nothing else.
+POST-WORKSHOP SURVEY (last outbound asked them to reply 1, 2, 3, or 4):
+- Reply 1: [DND] and nothing else.
+- Reply 2: Empathize → "are you around ${makeupDateLabel}?" No tokens yet.
+  → If last outbound already asked about ${makeupDateLabel} and they say yes: confirm them. Add [NEXT_WEEK_SIGNUP].
+- Reply 3: Empathize → No-oriented question track (see NO-ORIENTED QUESTION skill).
+- Reply 4: "thanks so much for being real about that 🫶🏼 we never want finances to be the only thing standing in the way — we actually have some lower-cost and sliding scale options now. if you'd like to explore what might work for your budget, feel free to book a quick call: ${BOOKING_LINK}" Then [HANDOFF] on its own line.
+- Outside 1-4: Empathize → ask one genuine follow-up question.
+- Last outbound asked them to reply 1 to confirm a booking: "awesome! thanks so much — looking forward to meeting you 🙌🏼"
+- Last outbound was an appointment confirmation request (asking them to reply "1" to confirm a scheduled call or appointment): Reply "1" → "awesome! we'll see you then 🙏🏼"
+</playbook>
 
----
+<tokens>
+Internal signals — stripped before sending. Never visible to the contact.
 
-TONE AND STYLE:
-- Warm, genuine — like a real person on Jason's team who actually cares
-- Texty and casual — run-on sentences, lowercase at the start sometimes, contractions always
-- No em dashes. No corporate language. Never sound like a bot.
-- Time formats: "9am" not "9:00am", "pt" not "Pacific Time" or "PST"
-- Emojis: natural and occasional, rotate 😊 😄 🙌🏼 🫶🏼 — max one per reply
-- Warm and complete but short enough to feel like a text, not an email
-- Match sign-off to time context — never say "see you tomorrow" if it's the day of or already ended
+[UNSURE] — you don't have the answer. No reply sent. Team alerted. Use for anything not in <knowledge_base> — including TFC, The Flow Code, coaching pricing, or post-workshop next steps.
+[CANT_MAKE_IT] — contact can't attend this week. Removes them from active workflows.
+[NEXT_WEEK_SIGNUP] — confirmed for make-up workshop (${makeupDateLabel}). Adds reschedule tag.
+[NEVER_SATURDAYS] — contact can never make it on Saturdays specifically. Adds GHL tag.
+[NEVER_WEEKENDS] — contact can never make it on weekends (Saturday or Sunday). Adds GHL tag.
+[DND] — survey reply 1. Applies DND in GHL, no message sent.
+[HANDOFF] — booking link provided. Alerts the team.
+</tokens>
 
-INTERNAL TOKENS — stripped before sending, never visible to the contact:
-[NEXT_WEEK_SIGNUP] — bot confirmed them for next Saturday
-[NEVER_SATURDAYS] — contact can't do Saturdays, add GHL tag
-[DND] — survey reply 1, apply DND in GHL, no message sent
-[HANDOFF] — booking link was provided, alert the team
-OUTOFSCOPE — out of scope, alert the team, no message sent`;
+<rules>
+1. KNOWLEDGE WHITELIST: Your knowledge is ONLY what is in <knowledge_base>. No general knowledge, no inferences, no gap-filling. If it is not in the knowledge base, it is [UNSURE]. No exceptions.
+
+2. SILENCE OVER WRONG: [UNSURE] beats making something up. A wrong answer destroys trust. A non-answer triggers a human follow-up.
+
+3. TONE: Warm and genuine. Texty and casual — contractions, lowercase sometimes, no em dashes, never corporate. "9am" not "9:00am", "pt" not "Pacific Time". Emojis: occasional, max one per reply. Short — a text, not an email.
+
+4. DAY OF WEEK: Always use ${workshopDayOfWeek} as the workshop day. Never say "Saturday" unless the workshop actually falls on a Saturday.
+
+5. SIGN-OFF: Follow the sign-off instruction in <time_context> exactly when closing a response.
+
+6. NEVER: Offer to remove someone from the list. Proactively mention the replay. Discuss TFC, The Flow Code, coaching pricing, or post-workshop next steps — those are [UNSURE].
+</rules>`;
 }
 
 // ─── GHL helpers ─────────────────────────────────────────────────────────────
@@ -328,6 +473,33 @@ async function addGHLTag(contactId, tag) {
   }
 }
 
+// Workflow IDs for active pre-workshop sequences — both are tried; safe if contact isn't enrolled
+const ACTIVE_WORKFLOW_IDS = [
+  "94e2fd72-8859-4cde-b590-67f9bc6fd77d",
+  "c73447b5-63fa-4c0e-9d21-2f6c5c9daf00",
+];
+
+async function removeFromGHLWorkflows(contactId) {
+  if (!contactId || !GHL_API_KEY) return;
+  for (const workflowId of ACTIVE_WORKFLOW_IDS) {
+    try {
+      const res = await fetch(
+        `https://services.leadconnectorhq.com/contacts/${contactId}/workflow/${workflowId}`,
+        {
+          method: "DELETE",
+          headers: {
+            "Authorization": `Bearer ${GHL_API_KEY}`,
+            "Version": "2021-07-28",
+          },
+        }
+      );
+      console.log(`GHL workflow ${workflowId} removal for ${contactId}: ${res.status}`);
+    } catch (err) {
+      console.error(`GHL workflow removal error (${workflowId}):`, err);
+    }
+  }
+}
+
 async function setGHLDND(contactId) {
   if (!contactId || !GHL_API_KEY) return;
   try {
@@ -375,30 +547,60 @@ async function sendSlackAlert(contactInfo, message, contactId) {
 
 // ─── Validation ───────────────────────────────────────────────────────────────
 
-async function validateReply(reply, conversationHistory, timeCtx, systemPrompt) {
+async function validateReply(replyWithTokens, conversationHistory, timeCtx, kb) {
   try {
-    const lastUserMessage = [...conversationHistory].reverse().find(m => m.role === "user")?.content || "";
+    // Build full conversation transcript so validator understands context
+    const transcript = conversationHistory
+      .slice(-12)
+      .map(m => `${m.role === "user" ? "REGISTRANT" : "BOT"}: ${m.content}`)
+      .join("\n");
+
+    // What the registrant will actually receive after stripping internal tokens
+    const messageToSend = replyWithTokens
+      .replace(/\[CANT_MAKE_IT\]/g, "")
+      .replace(/\[NEXT_WEEK_SIGNUP\]/g, "")
+      .replace(/\[NEVER_SATURDAYS\]/g, "")
+      .replace(/\[NEVER_WEEKENDS\]/g, "")
+      .replace(/\[HANDOFF\]/g, "")
+      .trim();
+
     const validation = await anthropic.messages.create({
       model: "claude-sonnet-4-5",
-      max_tokens: 150,
-      system: `You are a quality checker for an SMS bot. Review the proposed reply and return a JSON object with:
-- "score": integer 1-10 (10 = perfect, 1 = do not send)
-- "issue": short description of the problem, or null if none
+      max_tokens: 200,
+      system: `You are a quality checker for an SMS bot for Saints of Flow. Return a JSON object:
+{"score": 1-10, "issue": "description or null"}
+
+INTERNAL TOKENS (stripped before sending — correct behavior, do NOT penalise):
+[CANT_MAKE_IT], [NEXT_WEEK_SIGNUP], [NEVER_SATURDAYS], [NEVER_WEEKENDS], [HANDOFF]
+
+The time context tells you the current workshop date and make-up date — these may be on different days of the week. Treat both as correct. Workshops run on varying days. The make-up date in the knowledge base is the definitive source of truth — accept it exactly as written, whatever day of week it falls on.
+
+CITATION RULE — applies to factual claims only:
+Before scoring, identify every factual claim in the message — times, dates, costs, features, logistics, policies, anything verifiably right or wrong. For each one, find the exact knowledge base line that supports it.
+- Found it? The claim is allowed.
+- Can't find it? The claim fails — even if it sounds natural, reasonable, or probably true.
+
+The citation rule does NOT apply to: empathy, rapport-building, conversational warmth, social filler, or short acknowledgments that close a confirmed action. "ah no worries at all!" / "I've actually been hearing that a lot" / "totally get it" / "awesome! thanks so much — looking forward to meeting you" — these are communication skills or natural closes, not factual claims. Never penalize them for lacking a knowledge base citation. Do NOT require a response to include "next steps" or additional information that was not asked for — a warm close is complete on its own.
+
+The citation rule also does NOT apply to brand promises made when a contact has a scheduling conflict: "we'll reach out if we ever run one on a different day" / "I'll make sure we reach out if we do one during the week" / "we'll let you know if we ever run one on a weekday" — these are relationship commitments tied to the contact's stated preference, not factual claims about current workshop logistics.
 
 Fail immediately (score 1-3) if:
-- Any internal token appears in the reply: OUTOFSCOPE, [DND], [NEXT_WEEK_SIGNUP], [NEVER_SATURDAYS], [HANDOFF]
-- The reply says "see you tomorrow" or "tomorrow" when the time context says the workshop is today or already ended
-- The reply makes no sense as a response to what the person said
-- The reply sounds robotic, corporate, or reveals it's a bot
-- The reply states something that contradicts the bot's policy guidelines (wrong info on replays, bringing guests, confirmation emails, etc.)
-- The reply asks about next Saturday when the person said they can never do Saturdays, or when they were replying to a phone call follow-up (not saying they can't attend)
-- The reply confidently answers a question but gets the policy wrong
+- The message makes no sense given the conversation history
+- It sounds robotic, corporate, or AI-generated
+- It contradicts the knowledge base (wrong replay policy, wrong guest policy, wrong confirmation email info, etc.)
+- It states ANY fact not in the knowledge base — biographical claims about Jason, session structure details not listed, community or group info not listed, statistics or numbers not in the knowledge base, anything you cannot point to in the knowledge base
+- It engages with The Flow Code, TFC, coaching program sign-up, coaching pricing, or unsolicited coaching upsell — any response to these topics other than [UNSURE] fails. NOTE: a warm close like "looking forward to meeting you" after a call booking confirmation is NOT engaging with coaching — it is a simple acknowledgment and is allowed.
+- It says "see you tomorrow" when the workshop is today or already ended per time context
+- It gives the booking link URL (the actual leadconnectorhq.com URL) when the person has not expressed openness to a call — EXCEPTIONS: (1) survey reply 4 (financial barrier) is explicitly scripted to include the booking link, so including it there is correct behavior, not a violation; (2) asking about a call via a no-oriented question ("would you be opposed to a quick conversation?") WITHOUT including the URL is NOT a violation of this rule — the violation is providing the actual URL prematurely, not asking about a call
+- Required token is ABSENT: [NEXT_WEEK_SIGNUP] missing when the contact has explicitly said YES to a specific make-up date that was offered to them in this conversation. Selecting survey option 2 ("I'd like to join the next one") is NOT confirmation — it just opens the door to asking about the date. [NEXT_WEEK_SIGNUP] only belongs after they say yes to "are you around [date]?"
 
-Score 7-10 only if the reply is warm, contextually appropriate, human-sounding, AND factually consistent with the bot's guidelines.
+Before scoring 7+: "Can I find a specific knowledge base line for EVERY claim in this message?" If any claim has no citation, it fails. The bar is not "sounds plausible" — it's "explicitly in the knowledge base."
+
+Score 7-10 only if: warm, contextually appropriate, human-sounding, AND every factual claim is explicitly in the knowledge base.
 Respond with raw JSON only, no markdown.`,
       messages: [{
         role: "user",
-        content: `Bot policy guidelines:\n${systemPrompt}\n\n---\n\nTime context: ${timeCtx}\n\nLast message from person: "${lastUserMessage}"\n\nProposed reply: "${reply}"`
+        content: `Knowledge base:\n${kb}\n\n---\n\nTime context: ${timeCtx}\n\nConversation:\n${transcript}\n\nFull bot reply (before stripping tokens):\n${replyWithTokens}\n\nMessage registrant will receive:\n"${messageToSend}"`
       }]
     });
     const jsonMatch = validation.content[0].text.match(/\{[\s\S]*\}/);
@@ -461,8 +663,11 @@ app.post("/chat", async (req, res) => {
   console.log("Incoming payload:", JSON.stringify(req.body, null, 2));
 
   const contactId = req.body.customData?.contactId || req.body.contact_id;
-  const contactName = req.body.customData?.contactName || req.body.full_name;
-  const contactPhone = req.body.customData?.contactPhone || req.body.phone;
+  const contactName = req.body.customData?.contactName || req.body.full_name || req.body.contactName;
+  const contactPhone = req.body.customData?.contactPhone || req.body.phone || req.body.contactPhone;
+  const mockNow = req.body.mockNow || null; // ISO string for QA time simulation
+  const mockMakeupISO = req.body.mockMakeupISO || null; // ISO string to override makeup date in QA
+  const mockWorkshopISO = req.body.mockWorkshopISO || null; // ISO string to override primary workshop date in QA
 
   // GHL sends message as an object { type, body } — extract the text correctly
   const rawMessage = req.body.message;
@@ -494,7 +699,7 @@ app.post("/chat", async (req, res) => {
   history.push({ role: "user", content: messageText });
 
   // ── Build system prompt and call Claude ─────────────────────────────────
-  const systemPrompt = await buildSystemPrompt();
+  const systemPrompt = await buildSystemPrompt(mockNow, mockMakeupISO, mockWorkshopISO);
 
   let reply;
   try {
@@ -523,26 +728,19 @@ app.post("/chat", async (req, res) => {
     return res.json({ reply: null, dnd: true });
   }
 
-  // ── Handle OUTOFSCOPE ────────────────────────────────────────────────────
-  if (reply.trim() === "OUTOFSCOPE" || reply.includes("OUTOFSCOPE")) {
-    console.log("OUTOFSCOPE — alerting Slack");
-    await sendSlackAlert(contactInfo, messageText, contactId);
-    logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: "OUTOFSCOPE", reply: "", nextWeekSignup: false, confidence: null });
-    return res.json({ reply: null, outOfScope: true });
+  // ── Handle UNSURE — bot flagged it doesn't have the answer ───────────────
+  if (reply.includes("[UNSURE]")) {
+    console.log("UNSURE — bot flagged unknown, alerting team");
+    await sendSlackMessage(
+      `❓ *Bot flagged as unsure — needs human follow-up*\n*Contact:* ${contactInfo}\n*Their message:* "${messageText}"${ghlLink(contactId)}\n\nBot didn't have the answer. Please reply manually.`
+    );
+    logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: "UNSURE", reply: "[no reply sent]", nextWeekSignup: false, confidence: null });
+    return res.json({ reply: null, unsure: true });
   }
 
-  // ── Extract and strip all internal tokens ────────────────────────────────
-  const nextWeekSignup = reply.includes("[NEXT_WEEK_SIGNUP]");
-  const neverSaturdays = reply.includes("[NEVER_SATURDAYS]");
-  const handoff = reply.includes("[HANDOFF]");
-  reply = reply
-    .replace(/\[NEXT_WEEK_SIGNUP\]/g, "")
-    .replace(/\[NEVER_SATURDAYS\]/g, "")
-    .replace(/\[HANDOFF\]/g, "")
-    .trim();
-
-  // ── Validate ─────────────────────────────────────────────────────────────
-  const validation = await validateReply(reply, history, timeContext, systemPrompt);
+  // ── Validate (with tokens intact so validator sees full intent) ──────────
+  const rawReply = reply; // capture pre-validator reply for debugging
+  const validation = await validateReply(reply, history, timeContext, knowledgeBase);
   let finalScore = validation.score;
   let wasRetried = false;
   let origScoreForLog = null;
@@ -550,7 +748,7 @@ app.post("/chat", async (req, res) => {
   if (validation.score < 7) {
     const origScore = validation.score;
     const origIssue = validation.issue;
-    const origReply = reply;
+    const origReply = reply; // keep tokens for retry context
     origScoreForLog = origScore;
     console.log(`Low confidence (${origScore}/10) — retrying. Issue: "${origIssue}"`);
 
@@ -565,17 +763,13 @@ app.post("/chat", async (req, res) => {
           { role: "user", content: `[INTERNAL]: Your reply had a quality issue: "${origIssue || "quality too low"}". Please rewrite it.` },
         ],
       });
-      const retryReply = retryRes.content[0].text
-        .replace(/\[NEXT_WEEK_SIGNUP\]/g, "")
-        .replace(/\[NEVER_SATURDAYS\]/g, "")
-        .replace(/\[HANDOFF\]/g, "")
-        .trim();
-      const retryValidation = await validateReply(retryReply, history, timeContext, systemPrompt);
+      const retryReply = retryRes.content[0].text; // validate before stripping
+      const retryValidation = await validateReply(retryReply, history, timeContext, knowledgeBase);
       finalScore = retryValidation.score;
       console.log(`Retry: ${finalScore}/10 (was ${origScore}/10)`);
 
       if (finalScore >= 7) {
-        reply = retryReply;
+        reply = retryReply; // tokens still intact — will strip below
         wasRetried = true;
       }
     } catch (err) {
@@ -589,23 +783,57 @@ app.post("/chat", async (req, res) => {
       await sendSlackMessage(
         `⚠️ *Reply blocked after retry (${origScoreForLog}→${finalScore}/10)*\n*Contact:* ${contactInfo}\n*Issue:* ${validation.issue || "unknown"}\n*Their message:* "${messageText}"${ghlLink(contactId)}\n\nBoth attempts failed — please follow up manually.`
       );
-      logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: "BLOCKED", reply: `[BLOCKED ${origScoreForLog}→${finalScore}] ${reply}`, nextWeekSignup, confidence: origScoreForLog });
-      return res.json({ reply: null, blocked: true, confidence: origScoreForLog, retryScore: finalScore });
+      logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: "BLOCKED", reply: `[BLOCKED ${origScoreForLog}→${finalScore}] ${reply}`, nextWeekSignup: false, confidence: origScoreForLog });
+      const blockedDraft = rawReply
+        .replace(/\[CANT_MAKE_IT\]/g, "")
+        .replace(/\[NEXT_WEEK_SIGNUP\]/g, "")
+        .replace(/\[NEVER_SATURDAYS\]/g, "")
+        .replace(/\[NEVER_WEEKENDS\]/g, "")
+        .replace(/\[HANDOFF\]/g, "")
+        .trim();
+      return res.json({ reply: null, blocked: true, confidence: origScoreForLog, retryScore: finalScore, validatorIssue: origIssue || null, rawReply: blockedDraft });
     }
   }
 
+  // ── Strip internal tokens now that validation has passed ─────────────────
+  const cantMakeIt = reply.includes("[CANT_MAKE_IT]");
+  const nextWeekSignup = reply.includes("[NEXT_WEEK_SIGNUP]");
+  const neverSaturdays = reply.includes("[NEVER_SATURDAYS]");
+  const neverWeekends = reply.includes("[NEVER_WEEKENDS]");
+  const handoff = reply.includes("[HANDOFF]");
+  reply = reply
+    .replace(/\[CANT_MAKE_IT\]/g, "")
+    .replace(/\[NEXT_WEEK_SIGNUP\]/g, "")
+    .replace(/\[NEVER_SATURDAYS\]/g, "")
+    .replace(/\[NEVER_WEEKENDS\]/g, "")
+    .replace(/\[HANDOFF\]/g, "")
+    .trim();
+
   // ── Fire side effects (reply is confirmed good) ──────────────────────────
 
+  if (cantMakeIt) {
+    await removeFromGHLWorkflows(contactId);
+    console.log(`Workflows removed for ${contactId} (can't make it this week)`);
+  }
+
   if (nextWeekSignup) {
-    await sendSlackMessage(
-      `📋 *Next week signup*\n*Contact:* ${contactInfo}${ghlLink(contactId)}\nConfirmed for next Saturday — please add them to the list.`
-    );
+    await removeFromGHLWorkflows(contactId); // remove from this week's workflows
     await addGHLTag(contactId, "reschedule");
+    await sendSlackMessage(
+      `📋 *Next week signup*\n*Contact:* ${contactInfo}${ghlLink(contactId)}\nConfirmed for next workshop — please add them to the list.`
+    );
   }
 
   if (neverSaturdays) {
+    await removeFromGHLWorkflows(contactId);
     await addGHLTag(contactId, "never-saturdays");
     console.log(`never-saturdays tag added for ${contactId}`);
+  }
+
+  if (neverWeekends) {
+    await removeFromGHLWorkflows(contactId);
+    await addGHLTag(contactId, "never-weekends");
+    console.log(`never-weekends tag added for ${contactId}`);
   }
 
   if (handoff) {
@@ -621,17 +849,27 @@ app.post("/chat", async (req, res) => {
   }
 
   // ── Log and send ─────────────────────────────────────────────────────────
-  const triagetag = ["CONTEXTUAL", nextWeekSignup && "NEXT_WEEK", neverSaturdays && "NEVER_SAT", handoff && "HANDOFF"].filter(Boolean).join("+");
+  const triagetag = ["CONTEXTUAL", nextWeekSignup && "NEXT_WEEK", neverSaturdays && "NEVER_SAT", neverWeekends && "NEVER_WKND", handoff && "HANDOFF"].filter(Boolean).join("+");
   const sheetReply = wasRetried ? `[RETRIED ${origScoreForLog}→${finalScore}] ${reply}` : reply;
   logToSheet({ contactName, contactPhone, contactId, message: messageText, triage: triagetag, reply: sheetReply, nextWeekSignup, confidence: finalScore });
 
   const delay = typingDelay(reply);
+  console.log(`Reply: "${reply}"`);
   console.log(`Typing delay: ${Math.round(delay / 1000)}s for ${reply.length} char reply`);
+
+  const tokenFlags = { cantMakeIt, nextWeekSignup, neverSaturdays, neverWeekends, handoff };
+  const validatorMeta = {
+    validatorScore: finalScore,
+    validatorIssue: validation.score < 7 ? (validation.issue || null) : null,
+    validatorRetried: wasRetried,
+    validatorOrigScore: wasRetried ? origScoreForLog : null,
+    rawReply: rawReply !== reply ? rawReply.replace(/\[CANT_MAKE_IT\]/g,"").replace(/\[NEXT_WEEK_SIGNUP\]/g,"").replace(/\[NEVER_SATURDAYS\]/g,"").replace(/\[NEVER_WEEKENDS\]/g,"").replace(/\[HANDOFF\]/g,"").trim() : null,
+  };
 
   if (contactId) {
     // Respond to GHL webhook immediately so it doesn't time out,
     // then wait the delay before actually sending the SMS
-    res.json({ reply, sent: true });
+    res.json({ reply, sent: true, ...tokenFlags, ...validatorMeta });
     await sleep(delay);
     try {
       await sendGHLReply(contactId, reply);
@@ -640,7 +878,7 @@ app.post("/chat", async (req, res) => {
     }
   } else {
     // Local tester — no delay
-    res.json({ reply });
+    res.json({ reply, ...tokenFlags, ...validatorMeta });
   }
 });
 
@@ -713,6 +951,22 @@ app.get("/conversation/:contactId", async (req, res) => {
 app.post("/reset", (req, res) => {
   testConversations.clear();
   res.json({ ok: true });
+});
+
+// Workshop info endpoint — lets QA suite use same date source as the bot
+app.get("/workshop-info", async (req, res) => {
+  try {
+    const workshopTime = await getWorkshopDate();
+    const makeupTime = getMakeupDate(workshopTime);
+    res.json({
+      workshopDay: workshopTime.toLocaleDateString("en-US", { weekday: "long", timeZone: "America/Los_Angeles" }),
+      workshopDateLabel: workshopTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" }),
+      makeupDateLabel: makeupTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" }),
+      workshopISO: workshopTime.toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/seed", (req, res) => {
@@ -880,8 +1134,8 @@ async function sendMessage(){
       addMessage("system","HUMAN ACTIVE — bot standing down.");
     } else if(data.dnd){
       addMessage("system","DND — survey reply 1. DND applied in GHL, no message sent.");
-    } else if(data.outOfScope){
-      addMessage("system","OUT OF SCOPE — bot went silent. Slack alert fired.");
+    } else if(data.unsure){
+      addMessage("system","UNSURE — bot flagged it didn't have the answer. Slack alerted, team will follow up.");
     } else if(data.blocked){
       addMessage("system","BLOCKED — reply failed validation twice ("+data.confidence+"→"+data.retryScore+"/10). Slack alerted.");
     } else {

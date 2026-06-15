@@ -11,7 +11,7 @@ const payload = {
   contactPhone: "+15550001234",
   contactId: "test-contact-123",
   message: "What time does it start?",
-  triage: "INSCOPE",
+  triage: "CONTEXTUAL",
   reply: "hey! it starts at 9am pt this Saturday 😊",
   nextWeekSignup: false,
   confidence: 9,
