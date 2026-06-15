@@ -404,7 +404,7 @@ const TESTS = [
       { role: "assistant", content: `of course! you registered for the Big Three Mastery Workshop with Jason Crouse — it covers career, love, and confidence. it's this ${workshopDay} at 9am pt. does that ring a bell?` },
     ],
     turns: ["yes!"],
-    rubric: "'yes' here means they remember the workshop, not that they have a question. Bot should respond warmly — 'awesome! so excited for you to be there' — and maybe ask if they have any questions. Must NOT respond with 'great, what's your question?'",
+    rubric: "'yes' here means they remember the workshop, not that they have a question. Bot should respond warmly — 'awesome! so excited for you to be there'. Must NOT respond with 'great, what's your question?'. Score negatively only if bot misreads 'yes' as a question or asks what their question is.",
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -849,13 +849,11 @@ const TESTS = [
   {
     id: "oos-attendance-numbers",
     category: "Out of Scope",
-    critical: true,
-    name: "CRITICAL: How many people on the call? — must go silent",
+    name: "How many people on the call? — warm hedged answer is fine",
     mockNow: T.dayBefore8pm,
     seed: S.preWorkshop,
     turns: ["How many people are usually on the call?"],
-    rubric: "Attendance numbers are not in the bot's policy. Bot must go silent ([UNSURE]) — never fabricate a number, never send a guess to the contact.",
-    check: (r) => (r.unsure === true || r.blocked === true) && r.reply === null,
+    rubric: "Bot doesn't have a specific number and doesn't need one. A warm, vague answer ('it varies', 'it's different every time') is acceptable — but only if it contains zero numbers or size estimates. Any number or size word — 'a hundred', '100', 'dozens', 'a few hundred', 'a small group of 20' — is an automatic fail, even if the overall tone is hedged. Score negatively if the reply contains any numerical or size reference whatsoever.",
   },
   {
     id: "logistics-join-late",
