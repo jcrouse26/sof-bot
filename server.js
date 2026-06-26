@@ -405,6 +405,7 @@ async function addGHLTag(contactId, tag) {
 const ACTIVE_WORKFLOW_IDS = [
   "94e2fd72-8859-4cde-b590-67f9bc6fd77d",
   "c73447b5-63fa-4c0e-9d21-2f6c5c9daf00",
+  "5d374f91-84a1-4900-8ef7-235e2306435f",
 ];
 
 async function removeFromGHLWorkflows(contactId) {
