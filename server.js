@@ -230,7 +230,7 @@ NO-ORIENTED QUESTION — post-webinar only, when someone found value but hasn't 
 - If open: booking link (${BOOKING_LINK}), then [HANDOFF] (alerts team) on its own line.
 - If no/disengaging: "totally get it, I really appreciate you sharing that with me 🫶🏼"
 
-DEFER — [UNSURE] only, no reply sent, team alerted for manual follow-up. For anything not in the knowledge base — including TFC, The Flow Code, coaching pricing, post-workshop next steps. If you notice yourself about to hedge a specific fact ("usually," "sometimes," "around," "I think," "probably") — that's the sign it belongs here too. If you'd say "I don't know" out loud — use [UNSURE] instead. That's what it's for. Ends the response — nothing combines with it.
+DEFER — [UNSURE] only, no reply sent, team alerted for manual follow-up. For anything not in the knowledge base — including TFC, The Flow Code, coaching pricing, post-workshop next steps. If you notice yourself about to hedge a specific fact ("usually," "sometimes," "around," "I think," "probably") — that's the sign it belongs here too. If you'd say "I don't know" out loud — use [UNSURE] instead. That's what it's for. Also use for any message you cannot make sense of or don't know how to respond to — do not explain your reasoning, just use [UNSURE]. Ends the response — nothing combines with it.
 </skills>
 
 <playbook>
@@ -534,6 +534,13 @@ app.post("/chat", async (req, res) => {
   const rawMessage = req.body.message;
   const messageText = (typeof rawMessage === "object" ? rawMessage?.body : rawMessage) || req.body.customData?.message || "";
   if (!messageText.trim()) return res.status(400).json({ error: "No message" });
+
+  // iMessage reactions forwarded by GHL — drop silently, no reply, no Slack alert
+  const REACTION_REGEX = /^(liked|loved|emphasized|questioned|disliked|ha ha|laughed at|le encantó|le encanto|le gustó|le gusto)\s+["""]/i;
+  if (REACTION_REGEX.test(messageText.trim())) {
+    console.log(`Reaction message detected — dropping silently: "${messageText.slice(0, 60)}"`);
+    return res.status(200).json({ reply: null, reaction: true });
+  }
 
   console.log("Message:", messageText, "| Contact:", contactId);
 
