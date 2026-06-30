@@ -536,7 +536,7 @@ app.post("/chat", async (req, res) => {
   if (!messageText.trim()) return res.status(400).json({ error: "No message" });
 
   // iMessage reactions forwarded by GHL — drop silently, no reply, no Slack alert
-  const REACTION_REGEX = /^(liked|loved|emphasized|questioned|disliked|ha ha|laughed at|le encantó|le encanto|le gustó|le gusto)\s+["""]/i;
+  const REACTION_REGEX = /^(liked|loved|emphasized|questioned|disliked|ha ha|laughed at|le encantó|le encanto|le gustó|le gusto|reacted .{1,30} to)\s+["""']/i;
   if (REACTION_REGEX.test(messageText.trim())) {
     console.log(`Reaction message detected — dropping silently: "${messageText.slice(0, 60)}"`);
     return res.status(200).json({ reply: null, reaction: true });
