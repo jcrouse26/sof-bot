@@ -1070,6 +1070,96 @@ const TESTS = [
     check: (r) => r.cantMakeIt === true && r.neverWeekends === true,
   },
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // IMESSAGE REACTIONS — must be dropped silently, no reply, no Slack alert
+  // ══════════════════════════════════════════════════════════════════════════
+
+  {
+    id: "reaction-liked",
+    category: "Reactions",
+    name: "iMessage 'Liked' reaction — drop silently",
+    critical: true,
+    turns: [`Liked "See you Sunday!"`],
+    rubric: "iMessage liked reaction forwarded by GHL. Bot must return reply: null and reaction: true. No SMS sent, no Slack alert.",
+    check: (r) => r.reply === null && r.reaction === true,
+  },
+  {
+    id: "reaction-loved",
+    category: "Reactions",
+    name: "iMessage 'Loved' reaction — drop silently",
+    critical: true,
+    turns: [`Loved "We'll see you this Sunday at 10am!"`],
+    rubric: "iMessage loved reaction. Bot must return reply: null and reaction: true. No reply sent.",
+    check: (r) => r.reply === null && r.reaction === true,
+  },
+  {
+    id: "reaction-le-encanto",
+    category: "Reactions",
+    name: "Spanish iMessage reaction (Le encantó) — drop silently",
+    critical: true,
+    turns: [`Le encantó "¡Te esperamos este domingo!"`],
+    rubric: "Spanish iMessage loved reaction forwarded by GHL. Bot must return reply: null and reaction: true.",
+    check: (r) => r.reply === null && r.reaction === true,
+  },
+  {
+    id: "reaction-emoji-flower",
+    category: "Reactions",
+    name: "Emoji reaction 💐 — drop silently",
+    critical: true,
+    turns: [`Reacted 💐 to 'See you Sunday at 10am!'`],
+    rubric: "Emoji reaction forwarded by GHL as 'Reacted [emoji] to [text]'. Bot must return reply: null and reaction: true.",
+    check: (r) => r.reply === null && r.reaction === true,
+  },
+  {
+    id: "reaction-emoji-heart",
+    category: "Reactions",
+    name: "Emoji reaction ❤️ — drop silently",
+    critical: true,
+    turns: [`Reacted ❤️ to 'Great, we have you down for Sunday!'`],
+    rubric: "Heart emoji reaction forwarded by GHL. Bot must return reply: null and reaction: true.",
+    check: (r) => r.reply === null && r.reaction === true,
+  },
+  {
+    id: "reaction-emoji-thumbs-up",
+    category: "Reactions",
+    name: "Emoji reaction 👍 — drop silently",
+    critical: true,
+    turns: [`Reacted 👍 to 'You're all set for Sunday!'`],
+    rubric: "Thumbs-up emoji reaction forwarded by GHL. Bot must return reply: null and reaction: true.",
+    check: (r) => r.reply === null && r.reaction === true,
+  },
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SMS OPT-OUT KEYWORDS — dropped silently, carrier handles it
+  // ══════════════════════════════════════════════════════════════════════════
+
+  {
+    id: "opt-out-stop",
+    category: "Opt-Out",
+    name: "STOP keyword — drop silently",
+    critical: true,
+    turns: ["STOP"],
+    rubric: "SMS opt-out keyword. Bot must return reply: null and optOut: true. No reply, no Slack alert.",
+    check: (r) => r.reply === null && r.optOut === true,
+  },
+  {
+    id: "opt-out-unsubscribe",
+    category: "Opt-Out",
+    name: "UNSUBSCRIBE keyword — drop silently",
+    critical: true,
+    turns: ["UNSUBSCRIBE"],
+    rubric: "SMS opt-out keyword. Bot must return reply: null and optOut: true.",
+    check: (r) => r.reply === null && r.optOut === true,
+  },
+  {
+    id: "opt-out-not-triggered",
+    category: "Opt-Out",
+    name: "'stop' mid-sentence — NOT an opt-out",
+    turns: ["I need to stop coming on Sundays, can I switch to a weekday?"],
+    rubric: "The word 'stop' appears inside a sentence — not an opt-out keyword. Bot should respond normally, address the scheduling question. reply must NOT be null.",
+    check: (r) => r.reply !== null && r.optOut !== true,
+  },
+
 ];
 
 // ── LLM Scorer ────────────────────────────────────────────────────────────────
@@ -1087,6 +1177,10 @@ async function score(test, history, finalResponse) {
     ? "No reply sent — bot flagged [UNSURE], team alerted to follow up (response.unsure = true)"
     : finalResponse.blocked
     ? "No reply sent — blocked by validator"
+    : finalResponse.reaction
+    ? "No reply sent — iMessage reaction detected and dropped silently (response.reaction = true)"
+    : finalResponse.optOut
+    ? "No reply sent — SMS opt-out keyword detected and dropped silently (response.optOut = true)"
     : `Response object: ${JSON.stringify(finalResponse)}`;
 
   // Use mocked dates when the test overrides them — scorer must match what the bot saw
