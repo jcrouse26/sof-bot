@@ -542,6 +542,13 @@ app.post("/chat", async (req, res) => {
     return res.status(200).json({ reply: null, reaction: true });
   }
 
+  // SMS opt-out keywords — carrier/GHL handles these; bot drops silently, no Slack alert
+  const OPT_OUT_REGEX = /^(stop|unsubscribe|cancel|end|quit)$/i;
+  if (OPT_OUT_REGEX.test(messageText.trim())) {
+    console.log(`Opt-out keyword detected — dropping silently: "${messageText.trim()}"`);
+    return res.status(200).json({ reply: null, optOut: true });
+  }
+
   console.log("Message:", messageText, "| Contact:", contactId);
 
   // Human-active tag → stand down silently
