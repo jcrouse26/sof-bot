@@ -578,16 +578,28 @@ app.post("/chat", async (req, res) => {
 
   let reply;
   try {
-    const response = await anthropic.messages.create({
+    const callClaude = () => anthropic.messages.create({
       model: "claude-sonnet-4-5",
       max_tokens: 1000,
       system: systemPrompt,
       messages: history.slice(-20),
     });
+    let response;
+    try {
+      response = await callClaude();
+    } catch (firstErr) {
+      console.warn("Claude error (attempt 1), retrying in 2s:", firstErr.message);
+      await new Promise(r => setTimeout(r, 2000));
+      response = await callClaude();
+    }
     reply = response.content[0].text;
   } catch (err) {
-    console.error("Claude error:", err);
-    return res.status(500).json({ error: "Bot failed" });
+    console.error("Claude error (both attempts failed):", err);
+    const contactInfo = contactName || contactPhone || contactId || "Unknown";
+    await sendSlackMessage(
+      `⚠️ *Bot error — Claude API failed*\n*Contact:* ${contactInfo}${contactId ? `\n<https://app.gohighlevel.com/v2/location/krjo1qp2a6Zg0aXSMPZD/contacts/detail/${contactId}|View in GHL>` : ""}\n*Message:* "${messageText.slice(0, 100)}"\n*Error:* ${err.message}`
+    );
+    return res.status(200).json({ reply: null, error: "claude_unavailable" });
   }
 
   const contactInfo = contactName || contactPhone || contactId || "Unknown";
