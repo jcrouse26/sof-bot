@@ -22,6 +22,7 @@ export const WORKSHOP_SCHEDULE = [
   "2026-07-05T10:00:00-07:00",  // Sunday July 5 (exception — 10am PT)
   "2026-07-11T09:00:00-07:00",  // Saturday July 11
   "2026-07-19T09:00:00-07:00",  // Sunday July 19 (exception)
+  "2026-07-22T09:00:00-07:00",  // Wednesday July 22 (exception)
   "2026-07-25T09:00:00-07:00",  // Saturday July 25
 
   // ── August 2026 ───────────────────────────────────────────────────────
