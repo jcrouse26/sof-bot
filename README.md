@@ -52,6 +52,58 @@ Check Railway logs to see the conversation in real time.
 
 ---
 
+## Workshop Schedule (team-editable)
+
+The schedule lives in Postgres and is edited at:
+
+**`https://sof-bot-production.up.railway.app/schedule`**
+
+Sign in with your first name plus the shared team password (`SCHEDULE_PASSWORD`
+env var). You can add, edit, and remove workshop dates; the bot picks up changes
+within 60 seconds.
+
+**Audit trail.** Your name is signed into the session cookie and stamped onto
+`updated_by` on every write, shown in the "Last edited" column as
+`Ashley · 2d ago`. The name is covered by the cookie's HMAC, so it can't be
+edited client-side to attribute a change to someone else. This is accountability,
+not authentication — everyone shares one password, so it answers "who moved
+July 22?" rather than gating access per person.
+
+Changing `SCHEDULE_PASSWORD` invalidates every existing session, which is what
+you want when someone leaves the team.
+
+**Enter Pacific wall-clock time.** Type `9:00 AM` and it stays 9am Pacific across
+daylight saving — Postgres does the offset conversion via `AT TIME ZONE`. Nobody
+enters `-07:00` / `-08:00` by hand anymore.
+
+### How the data flows
+
+| Layer | File | Role |
+|---|---|---|
+| Table | `workshops` on **Postgres--SN8** | source of truth |
+| Access | `db.js` | SQL, schema creation, seeding |
+| Cache | `schedule-store.js` | in-memory, refreshed every 60s and on every edit |
+| Auth | `schedule-auth.js` | HMAC-signed cookie, shared password, editor name |
+| UI | `schedule-page.js` | the `/schedule` page |
+| Fallback | `workshop-schedule.js` | seed on first boot + outage fallback only |
+
+If Postgres is unreachable the bot serves its last good read; if it never got
+one, it uses `workshop-schedule.js`; if that's exhausted, it falls back to
+"next Saturday 9am PT". It cannot end up with no date.
+
+> ⚠️ `Postgres--SN8` is the sof-bot database. `Postgres-ENka` in the same Railway
+> project is **tfc-platform production** (members, payments). Never point
+> `DATABASE_URL` here at ENka.
+
+The schema is created automatically on boot (`CREATE TABLE IF NOT EXISTS`), so
+there's no manual migration step. To inspect or verify it:
+
+```
+DATABASE_URL="$(railway variables --service Postgres--SN8 --kv | grep '^DATABASE_PUBLIC_URL=' | cut -d= -f2-)" node test-schedule-db.mjs
+```
+
+---
+
 ## Health Check
 
 Visit `https://your-railway-url.up.railway.app/health` to confirm the server is running.

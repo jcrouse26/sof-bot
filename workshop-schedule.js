@@ -1,16 +1,22 @@
 /**
- * SOF Workshop Schedule
+ * SOF Workshop Schedule — SEED / FALLBACK ONLY
  * ─────────────────────────────────────────────────────────────────────────
- * Add upcoming workshop dates here. The bot uses this to:
- *   1. Cross-check the date scraped from the website (Slacks if they differ)
- *   2. Find the make-up date (first entry after the current workshop)
+ * ⚠️  THIS FILE IS NO LONGER WHERE YOU EDIT THE SCHEDULE.
+ *     Edit it at  https://sof-bot-production.up.railway.app/schedule
+ *
+ * The live schedule lives in the `workshops` table on the sof-bot Postgres.
+ * This array is used in exactly two situations:
+ *   1. First boot against an empty table — it seeds the database.
+ *   2. Total database outage — the bot serves these dates rather than nothing.
+ *
+ * Changing a date here will NOT change what the bot says once the table has
+ * rows. See schedule-store.js for the degradation ladder.
  *
  * Format: ISO 8601 with explicit UTC offset
  *   PDT (Mar 2nd Sun → Nov 1st Sun): -07:00
  *   PST (Nov 1st Sun → Mar 2nd Sun): -08:00
- *
- * All workshops are 9am Pacific. Add non-Saturday exceptions as needed.
- * Past dates are ignored automatically — safe to leave them in.
+ * (The admin page stores Pacific wall-clock instead, so DST is handled for you
+ *  there — this manual-offset format only survives here for the seed path.)
  */
 
 export const WORKSHOP_SCHEDULE = [

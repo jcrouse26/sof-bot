@@ -1,9 +1,13 @@
 import express from "express";
 import Anthropic from "@anthropic-ai/sdk";
-import { WORKSHOP_SCHEDULE } from "./workshop-schedule.js";
+import * as db from "./db.js";
+import * as scheduleStore from "./schedule-store.js";
+import * as auth from "./schedule-auth.js";
+import { loginPage, adminPage } from "./schedule-page.js";
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: false })); // the /schedule login form posts as a form
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -36,7 +40,7 @@ function nextSaturdayAt9amPT() {
 // Falls back to next Saturday at 9am PT if schedule runs out.
 function getMakeupDate(currentWorkshopDate) {
   const currentDay = currentWorkshopDate.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles" });
-  for (const iso of WORKSHOP_SCHEDULE) {
+  for (const iso of scheduleStore.getScheduleISO()) {
     const d = new Date(iso);
     const schedDay = d.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles" });
     if (schedDay !== currentDay && d > currentWorkshopDate) return d;
@@ -45,11 +49,12 @@ function getMakeupDate(currentWorkshopDate) {
   return nextSaturdayAt9amPT();
 }
 
-// Returns the current (or next upcoming) workshop date from the schedule file.
+// Returns the current (or next upcoming) workshop date from the schedule store
+// (Postgres, cached in memory — see schedule-store.js).
 // Falls back to next Saturday at 9am PT if the schedule is exhausted.
 function getWorkshopDate() {
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  for (const iso of WORKSHOP_SCHEDULE) {
+  for (const iso of scheduleStore.getScheduleISO()) {
     const d = new Date(iso);
     if (d > oneDayAgo) return d;
   }
@@ -798,6 +803,127 @@ app.post("/seed", (req, res) => {
   res.json({ ok: true, seeded: messages.length });
 });
 
+// ─── Workshop schedule admin ─────────────────────────────────────────────────
+// Team-editable schedule at /schedule, backed by the sof-bot Postgres.
+// Everything the bot reads comes from scheduleStore's cache, not these routes.
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function validateSlot({ local_date, local_time }, { partial = false } = {}) {
+  if (local_date !== undefined) {
+    if (!DATE_RE.test(local_date)) return "Date must look like YYYY-MM-DD.";
+    const [y, m, d] = local_date.split("-").map(Number);
+    const probe = new Date(Date.UTC(y, m - 1, d));
+    if (probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) return "That date doesn't exist.";
+  } else if (!partial) {
+    return "A date is required.";
+  }
+  if (local_time !== undefined && !TIME_RE.test(local_time)) {
+    return "Time must look like HH:MM on a 24-hour clock.";
+  }
+  return null;
+}
+
+function clientIp(req) {
+  return (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket.remoteAddress || "unknown";
+}
+
+app.get("/schedule", (req, res) => {
+  if (!auth.isConfigured()) return res.send(loginPage({ configured: false }));
+  if (!auth.isAuthed(req)) return res.send(loginPage({}));
+  res.send(adminPage({ name: auth.editorName(req) }));
+});
+
+app.post("/schedule/login", (req, res) => {
+  const ip = clientIp(req);
+  const name = auth.cleanName(req.body?.name);
+  if (!auth.isConfigured()) return res.send(loginPage({ configured: false }));
+  if (auth.tooManyAttempts(ip)) {
+    return res.status(429).send(loginPage({ error: "Too many attempts. Try again in 15 minutes.", name }));
+  }
+  if (!name) {
+    // Checked before the password so a missing name never burns a rate-limit slot.
+    return res.status(400).send(loginPage({ error: "Add your first name so edits can be attributed." }));
+  }
+  if (!auth.checkPassword(req.body?.password)) {
+    auth.recordFailure(ip);
+    return res.status(401).send(loginPage({ error: "Wrong password.", name }));
+  }
+  auth.clearAttempts(ip);
+  auth.setCookie(res, req, name);
+  res.redirect("/schedule");
+});
+
+app.post("/schedule/logout", (req, res) => {
+  auth.clearCookie(res);
+  res.redirect("/schedule");
+});
+
+app.get("/api/schedule", auth.requireAuth, async (req, res) => {
+  try {
+    const workshops = await db.listWorkshops();
+    res.json({ workshops, meta: scheduleStore.getMeta() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/schedule", auth.requireAuth, async (req, res) => {
+  const { local_date, local_time = "09:00", note = "" } = req.body || {};
+  const invalid = validateSlot({ local_date, local_time });
+  if (invalid) return res.status(400).json({ error: invalid });
+  try {
+    const row = await db.addWorkshop({
+      localDate: local_date,
+      localTime: local_time,
+      note: String(note).slice(0, 300),
+      updatedBy: auth.editorName(req),
+    });
+    await scheduleStore.refresh();
+    res.json({ workshop: row });
+  } catch (err) {
+    if (err.code === "23505") return res.status(409).json({ error: "That date and time is already on the schedule." });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch("/api/schedule/:id", auth.requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Bad id." });
+  const { local_date, local_time, note, active } = req.body || {};
+  const invalid = validateSlot({ local_date, local_time }, { partial: true });
+  if (invalid) return res.status(400).json({ error: invalid });
+  try {
+    const row = await db.updateWorkshop(id, {
+      localDate: local_date,
+      localTime: local_time,
+      note: note === undefined ? undefined : String(note).slice(0, 300),
+      active,
+      updatedBy: auth.editorName(req),
+    });
+    if (!row) return res.status(404).json({ error: "No such workshop." });
+    await scheduleStore.refresh();
+    res.json({ workshop: row });
+  } catch (err) {
+    if (err.code === "23505") return res.status(409).json({ error: "That date and time is already on the schedule." });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/schedule/:id", auth.requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Bad id." });
+  try {
+    const ok = await db.deleteWorkshop(id);
+    if (!ok) return res.status(404).json({ error: "No such workshop." });
+    await scheduleStore.refresh();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/", (req, res) => {
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -1028,6 +1154,12 @@ async function loadSeed(){
 });
 
 const PORT = process.env.PORT || 3000;
+
+// Schedule init never throws — if Postgres is unreachable the bot still boots
+// and answers from workshop-schedule.js.
+await scheduleStore.init();
+
 app.listen(PORT, () => {
   console.log(`SOF Bot running on port ${PORT}`);
+  console.log(`Schedule admin: /schedule (${auth.isConfigured() ? "password set" : "SCHEDULE_PASSWORD NOT SET"})`);
 });
