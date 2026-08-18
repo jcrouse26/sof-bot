@@ -4,6 +4,8 @@ import * as db from "./db.js";
 import * as scheduleStore from "./schedule-store.js";
 import * as auth from "./schedule-auth.js";
 import { loginPage, adminPage } from "./schedule-page.js";
+import * as webinarSync from "./webinar-sync.js";
+import * as zoomWebinars from "./zoom-webinars.js";
 
 const app = express();
 app.use(express.json());
@@ -880,8 +882,10 @@ app.post("/api/schedule", auth.requireAuth, async (req, res) => {
       note: String(note).slice(0, 300),
       updatedBy: auth.editorName(req),
     });
+    // A new date slots into the sequence and pushes later editions down.
+    await db.renumberUpcoming();
     await scheduleStore.refresh();
-    res.json({ workshop: row });
+    res.json({ workshop: row });  // edition may be re-sequenced by the renumber above; the page reloads either way
   } catch (err) {
     if (err.code === "23505") return res.status(409).json({ error: "That date and time is already on the schedule." });
     res.status(500).json({ error: err.message });
@@ -891,19 +895,33 @@ app.post("/api/schedule", auth.requireAuth, async (req, res) => {
 app.patch("/api/schedule/:id", auth.requireAuth, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "Bad id." });
-  const { local_date, local_time, note, active } = req.body || {};
+  const { local_date, local_time, note, active, zoom_link, edition } = req.body || {};
+  if (edition !== undefined && edition !== null && edition !== "" && !Number.isInteger(Number(edition))) {
+    return res.status(400).json({ error: "Edition must be a whole number." });
+  }
   const invalid = validateSlot({ local_date, local_time }, { partial: true });
   if (invalid) return res.status(400).json({ error: invalid });
+  if (zoom_link !== undefined && String(zoom_link).trim() && !/^https:\/\/[\w.-]*zoom\.us\//i.test(String(zoom_link).trim())) {
+    return res.status(400).json({ error: "That doesn't look like a Zoom link (expected https://…zoom.us/…)." });
+  }
   try {
     const row = await db.updateWorkshop(id, {
       localDate: local_date,
       localTime: local_time,
       note: note === undefined ? undefined : String(note).slice(0, 300),
       active,
+      zoomLink: zoom_link === undefined ? undefined : String(zoom_link).slice(0, 500),
+      edition: edition === undefined ? undefined : (edition === "" || edition === null ? null : Number(edition)),
       updatedBy: auth.editorName(req),
     });
     if (!row) return res.status(404).json({ error: "No such workshop." });
+    // Moving a date, or setting the current workshop's edition, re-sequences
+    // everything after it.
+    await db.renumberUpcoming();
     await scheduleStore.refresh();
+    // Publish immediately rather than waiting up to a minute — pasting the Zoom
+    // link is the step everything else was gated on.
+    runWebinarSync().catch(() => {});
     res.json({ workshop: row });
   } catch (err) {
     if (err.code === "23505") return res.status(409).json({ error: "That date and time is already on the schedule." });
@@ -917,10 +935,54 @@ app.delete("/api/schedule/:id", auth.requireAuth, async (req, res) => {
   try {
     const ok = await db.deleteWorkshop(id);
     if (!ok) return res.status(404).json({ error: "No such workshop." });
+    await db.renumberUpcoming();
     await scheduleStore.refresh();
+    runWebinarSync().catch(() => {});
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// What the sync last did, and what it would do right now. Dry-run by default so
+// this is safe to hit while poking at a problem.
+app.get("/api/webinar-sync", auth.requireAuth, async (req, res) => {
+  try {
+    const preview = await webinarSync.reconcile({ listWorkshops: db.listWorkshops, dryRun: true });
+    res.json({ last: webinarSync.getStatus(), preview });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Force a real sync — the "just push it now" button.
+app.post("/api/webinar-sync/run", auth.requireAuth, async (req, res) => {
+  try {
+    const state = await webinarSync.reconcile({
+      listWorkshops: db.listWorkshops,
+      notify: sendSlackMessage,
+    });
+    res.json(state);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Setup check for the Zoom app — confirms the credentials work and shows which
+// scopes were actually granted, which is the thing that silently goes wrong.
+app.get("/api/zoom-check", auth.requireAuth, async (req, res) => {
+  if (!zoomWebinars.isConfigured()) {
+    return res.json({ configured: false, detail: "ZOOM_WEBINAR_* vars not set" });
+  }
+  try {
+    const scopes = await zoomWebinars.grantedScopes();
+    res.json({
+      configured: true,
+      scopes,
+      canCreateWebinars: scopes.some((s) => s.startsWith("webinar:write")),
+    });
+  } catch (err) {
+    res.status(500).json({ configured: true, error: err.message });
   }
 });
 
@@ -1158,6 +1220,38 @@ const PORT = process.env.PORT || 3000;
 // Schedule init never throws — if Postgres is unreachable the bot still boots
 // and answers from workshop-schedule.js.
 await scheduleStore.init();
+
+// Keep the GHL webinar custom values pointed at the next workshop. Runs on the
+// same 60s cadence as the schedule cache: a reconcile is a couple of in-memory
+// comparisons plus one GHL read, and it only writes when something differs —
+// in practice once or twice a week, when a webinar rolls over.
+const WEBINAR_SYNC_MS = 60_000;
+async function runWebinarSync() {
+  // Rooms first: creating one is what un-gates the publish below, so a new
+  // workshop can go from "just added" to "live in GHL" in a single pass.
+  if (zoomWebinars.isConfigured()) {
+    const z = await zoomWebinars.ensureRooms({
+      listWorkshops: db.listWorkshops,
+      updateWorkshop: db.updateWorkshop,
+      notify: sendSlackMessage,
+    });
+    if (z.status !== "in-sync") console.log(`[zoom] ${z.status}: ${z.detail}`);
+    if (z.created.length) await scheduleStore.refresh();
+  }
+
+  const state = await webinarSync.reconcile({
+    listWorkshops: db.listWorkshops,
+    notify: sendSlackMessage,
+  });
+  if (state.status !== "in-sync") {
+    console.log(`[webinar-sync] ${state.status}: ${state.detail}${state.workshop ? ` (${state.workshop})` : ""}`);
+  }
+}
+if (db.isConfigured()) {
+  await runWebinarSync();
+  const syncTimer = setInterval(() => { runWebinarSync().catch(() => {}); }, WEBINAR_SYNC_MS);
+  syncTimer.unref?.();
+}
 
 app.listen(PORT, () => {
   console.log(`SOF Bot running on port ${PORT}`);

@@ -148,8 +148,8 @@ export function adminPage({ name = "" } = {}) {
     <h2>Upcoming</h2>
     <div class="card">
       <table><thead><tr>
-        <th style="width:32%">Date</th><th style="width:13%">Time</th><th>Note</th>
-        <th style="width:20%">Last edited</th><th style="width:150px"></th>
+        <th style="width:24%">Date</th><th style="width:10%">Time</th><th style="width:52px">#</th><th style="width:88px">Zoom</th><th>Note</th>
+        <th style="width:15%">Last edited</th><th style="width:150px"></th>
       </tr></thead><tbody id="upcoming"></tbody></table>
       <div class="empty" id="upcoming-empty" style="display:none">
         No upcoming workshops. The bot will fall back to “next Saturday at 9am PT”.
@@ -158,8 +158,8 @@ export function adminPage({ name = "" } = {}) {
     <button class="toggle" onclick="togglePast()" id="past-toggle">▸ show past dates</button>
     <div class="card" id="past-card" style="display:none">
       <table><thead><tr>
-        <th style="width:32%">Date</th><th style="width:13%">Time</th><th>Note</th>
-        <th style="width:20%">Last edited</th><th style="width:150px"></th>
+        <th style="width:24%">Date</th><th style="width:10%">Time</th><th style="width:52px">#</th><th style="width:88px">Zoom</th><th>Note</th>
+        <th style="width:15%">Last edited</th><th style="width:150px"></th>
       </tr></thead><tbody id="past"></tbody></table>
     </div>
   </section>
@@ -232,6 +232,14 @@ function render() {
   document.getElementById("upcoming-empty").style.display = up.length ? "none" : "block";
 }
 
+// The Zoom room is created by hand, and nothing publishes to GHL until it
+// exists — so a missing one is shown as a warning, not a blank cell.
+function zoomCell(r, isPast) {
+  if (r.zoom_link) return \`<a href="\${esc(r.zoom_link)}" target="_blank" rel="noopener" style="color:var(--gold);text-decoration:none">room ↗</a>\`;
+  if (isPast) return '<span class="note">—</span>';
+  return '<span class="exception" style="color:var(--red);border-color:rgba(224,85,85,.3)">no room</span>';
+}
+
 function tpl(r, isPast) {
   const offSchedule = weekday(r.local_date) !== "Saturday" || r.local_time !== "09:00";
   // active=false rows exist in the table but are invisible to the bot. Nothing
@@ -240,6 +248,8 @@ function tpl(r, isPast) {
   return \`<tr class="\${isPast || hidden ? "past" : ""}" data-id="\${r.id}">
     <td class="day">\${esc(prettyDate(r.local_date))}\${offSchedule ? '<span class="exception">exception</span>' : ""}\${hidden ? '<span class="exception" style="color:var(--red);border-color:rgba(224,85,85,.3)">bot ignores this</span>' : ""}</td>
     <td class="time">\${esc(prettyTime(r.local_time))}</td>
+    <td class="time" title="\${r.edition ? "tag: the-big-three-webinar-v" + r.edition : "no edition number — tag will not update"}">\${r.edition ? "v" + r.edition : '<span style="color:var(--red)">—</span>'}</td>
+    <td>\${zoomCell(r, isPast)}</td>
     <td class="note">\${esc(r.note) || "—"}</td>
     <td class="note">\${esc(editedBy(r))}</td>
     <td style="text-align:right;white-space:nowrap">
@@ -298,7 +308,9 @@ function editRow(id) {
   tr.innerHTML = \`
     <td><input type="date" value="\${r.local_date}" id="e-d-\${id}"/></td>
     <td><input type="time" value="\${r.local_time}" id="e-t-\${id}"/></td>
-    <td><input type="text" value="\${esc(r.note)}" id="e-n-\${id}" placeholder="note"/></td>
+    <td><input type="text" value="\${r.edition ?? ""}" id="e-e-\${id}" placeholder="#" style="padding-left:7px;padding-right:2px"/></td>
+    <td colspan="2"><input type="text" value="\${esc(r.zoom_link || "")}" id="e-z-\${id}" placeholder="Zoom link — publishes to the site when saved"/>
+      <input type="text" value="\${esc(r.note)}" id="e-n-\${id}" placeholder="note" style="margin-top:6px"/></td>
     <td class="note">\${esc(editedBy(r))}</td>
     <td style="text-align:right;white-space:nowrap">
       <button class="icon" onclick="saveRow(\${id})" style="color:var(--gold)">save</button>
@@ -311,6 +323,8 @@ async function saveRow(id) {
     local_date: document.getElementById("e-d-" + id).value,
     local_time: document.getElementById("e-t-" + id).value,
     note: document.getElementById("e-n-" + id).value,
+    zoom_link: document.getElementById("e-z-" + id).value,
+    edition: document.getElementById("e-e-" + id).value.trim(),
   };
   const res = await fetch("/api/schedule/" + id, {
     method: "PATCH",

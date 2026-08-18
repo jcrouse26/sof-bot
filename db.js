@@ -47,6 +47,9 @@ const SELECT_COLUMNS = `
   to_char(local_time, 'HH24:MI')           AS local_time,
   note,
   active,
+  edition,
+  zoom_link,
+  zoom_webinar_id,
   updated_by,
   updated_at,
   (local_date + local_time) AT TIME ZONE '${TZ}' AS starts_at
@@ -71,6 +74,24 @@ export async function initSchema() {
     await client.query(`
       ALTER TABLE workshops
         ADD COLUMN IF NOT EXISTS updated_by TEXT NOT NULL DEFAULT ''
+    `);
+    // The Zoom room for this workshop. `zoom_link` is what gets published to
+    // GHL; `zoom_webinar_id` is Zoom's own id, and its presence is what stops
+    // the scheduler from creating a second webinar for the same slot.
+    // Nullable on purpose: a slot with no link yet is a real state the
+    // reconciler must recognise rather than paper over.
+    await client.query(`
+      ALTER TABLE workshops
+        ADD COLUMN IF NOT EXISTS zoom_link TEXT,
+        ADD COLUMN IF NOT EXISTS zoom_webinar_id TEXT
+    `);
+    // The workshop's edition number, as used in the registration tag
+    // (the-big-three-webinar-v45). Stored, not derived from position: a
+    // cancelled or inserted date must not renumber every workshop after it,
+    // and tags already applied to real contacts can never be rewritten.
+    await client.query(`
+      ALTER TABLE workshops
+        ADD COLUMN IF NOT EXISTS edition INTEGER
     `);
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS workshops_slot_idx
@@ -129,16 +150,19 @@ export async function listWorkshops({ activeOnly = false, includePast = true } =
 }
 
 export async function addWorkshop({ localDate, localTime, note, updatedBy }) {
+  // Edition continues the sequence rather than counting rows — deleting a past
+  // workshop must not hand its number to a future one, since the old number is
+  // already on real contacts in GHL.
   const { rows } = await getPool().query(
-    `INSERT INTO workshops (local_date, local_time, note, updated_by)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO workshops (local_date, local_time, note, updated_by, edition)
+     VALUES ($1, $2, $3, $4, (SELECT COALESCE(MAX(edition), 0) + 1 FROM workshops))
      RETURNING ${SELECT_COLUMNS}`,
     [localDate, localTime, note || "", updatedBy || ""]
   );
   return rows[0];
 }
 
-export async function updateWorkshop(id, { localDate, localTime, note, active, updatedBy }) {
+export async function updateWorkshop(id, { localDate, localTime, note, active, edition, zoomLink, zoomWebinarId, updatedBy }) {
   const sets = [];
   const vals = [];
   const push = (frag, val) => { vals.push(val); sets.push(`${frag} = $${vals.length}`); };
@@ -147,6 +171,12 @@ export async function updateWorkshop(id, { localDate, localTime, note, active, u
   if (localTime !== undefined) push("local_time", localTime);
   if (note !== undefined) push("note", note);
   if (active !== undefined) push("active", active);
+  // Empty string from the admin form means "no link", which must be stored as
+  // NULL — the reconciler treats NULL as "not ready to publish", and "" would
+  // slip past that check and publish a blank Zoom link.
+  if (edition !== undefined) push("edition", Number.isInteger(edition) ? edition : null);
+  if (zoomLink !== undefined) push("zoom_link", zoomLink?.trim() || null);
+  if (zoomWebinarId !== undefined) push("zoom_webinar_id", zoomWebinarId?.trim() || null);
   if (!sets.length) return null;
 
   // Stamped on every write, so "last edited by" is always the person who
@@ -161,6 +191,45 @@ export async function updateWorkshop(id, { localDate, localTime, note, active, u
     vals
   );
   return rows[0] || null;
+}
+
+/**
+ * Renumber upcoming workshops so editions run in date order.
+ *
+ * Only rows from the current workshop forward are touched. Past editions are
+ * already applied to real contacts in GHL and can never move. Future ones have
+ * never been applied to anyone — nobody can be tagged with an edition that
+ * isn't the current one — so inserting a date mid-schedule should slot in and
+ * push the rest down.
+ *
+ * The current workshop is the anchor: it keeps its number, and everything
+ * after it counts up from there. Set the anchor's edition by hand once and the
+ * whole forward schedule numbers itself.
+ */
+export async function renumberUpcoming({ cutoverMinutes = 90 } = {}) {
+  const { rows } = await getPool().query(
+    `WITH upcoming AS (
+       SELECT id, row_number() OVER (ORDER BY local_date, local_time) AS rn
+       FROM workshops
+       WHERE active
+         AND (local_date + local_time) AT TIME ZONE '${TZ}' > now() - ($1 || ' minutes')::interval
+     ),
+     anchor AS (
+       SELECT COALESCE(
+         (SELECT w.edition FROM workshops w JOIN upcoming u ON u.id = w.id WHERE u.rn = 1),
+         (SELECT MAX(w2.edition) + 1 FROM workshops w2 WHERE w2.id NOT IN (SELECT id FROM upcoming)),
+         1
+       ) AS base
+     )
+     UPDATE workshops w
+     SET edition = anchor.base + upcoming.rn - 1
+     FROM upcoming, anchor
+     WHERE w.id = upcoming.id
+       AND w.edition IS DISTINCT FROM anchor.base + upcoming.rn - 1
+     RETURNING w.id, w.edition`,
+    [String(cutoverMinutes)]
+  );
+  return rows;
 }
 
 export async function deleteWorkshop(id) {
