@@ -93,11 +93,15 @@ export async function grantedScopes() {
 /**
  * Create one scheduled webinar.
  *
- * type 5        = scheduled webinar (not a meeting — this is what yields a /w/ link)
- * approval_type 2 = no Zoom-side registration, so join_url is a single shareable
- *                 link, matching the links already published in GHL. Switching
- *                 this to 0 or 1 makes join_url per-registrant and would break
- *                 the "one link in a custom value" model.
+ * type 5          = scheduled webinar, not a meeting
+ * approval_type 0 = registration required, auto-approved. Zoom collects each
+ *                 attendee's name and email, which is what no-show detection
+ *                 downstream depends on — without it Zoom's attendee report
+ *                 can't be matched back to a GHL contact.
+ *
+ * PUBLISH registration_url, NOT join_url. With registration on, Zoom returns
+ * both: join_url walks straight into the room and skips registration entirely,
+ * which would silently defeat the setting. registration_url is the public page.
  */
 export async function createWebinar(startsAt) {
   const token = await getToken();
@@ -114,7 +118,7 @@ export async function createWebinar(startsAt) {
         host_video: true,
         panelists_video: true,
         practice_session: false,
-        approval_type: 2,
+        approval_type: 0,
         auto_recording: "cloud",
       },
     }),
@@ -125,7 +129,9 @@ export async function createWebinar(startsAt) {
     throw new Error(`Zoom create failed: ${res.status} ${body.message || ""}`.trim());
   }
   // start_url is a host credential — deliberately not returned or stored.
-  return { id: String(body.id), joinUrl: body.join_url };
+  const publicUrl = body.registration_url || body.join_url;
+  if (!publicUrl) throw new Error(`Zoom returned no usable URL for webinar ${body.id}`);
+  return { id: String(body.id), joinUrl: publicUrl };
 }
 
 /**
