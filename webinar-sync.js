@@ -16,7 +16,7 @@
  * to a dead room, which is worse than a stale date. Instead we hold the old
  * values and raise a Slack alert.
  *
- * All five values move together or not at all. Two of them (the calendar link
+ * The whole set moves together or not at all. Two of them (the calendar link
  * and the Zoom link itself) embed the room URL, so a partial write is exactly
  * the broken state the gate exists to prevent.
  */
@@ -47,17 +47,22 @@ const ZOOM_WARN_HOURS = 48;
 // as a loud "field not found" rather than a silent write to the wrong place.
 const FIELDS = ["webinar_date", "webinar_time", "custom_zoom_webinar_link", "webinar_google_add_to_calendar_link", "webinar_internal_date_time"];
 
-// Feeds the "Set Webinar Event Start Date & Time" action in the reminder
-// workflows, which accepts a custom field but only in its own date format —
-// so it can't reuse webinar_internal_date_time. Kept OPTIONAL: until someone
-// creates it in GHL the rest of the sync carries on as normal, rather than
-// aborting every pass over a field that isn't there yet.
-// Also optional, and additionally conditional on the workshop having an
-// edition number — see desiredValues.
-const OPTIONAL_FIELDS = ["webinar_event_start", "webinar_tag"];
+// Optional fields: each joins the set only once it exists in GHL, so the sync
+// keeps working while they're being created one at a time.
+//   webinar_event_start  — feeds "Set Webinar Event Start Date & Time", which
+//     takes a custom field but only in its own date format, so it can't reuse
+//     webinar_internal_date_time.
+//   webinar_tag / webinar_tag_no_shows — the registration tags. Additionally
+//     conditional on the workshop having an edition number; see desiredValues.
+const OPTIONAL_FIELDS = ["webinar_event_start", "webinar_tag", "webinar_tag_no_shows"];
 
-// the-big-three-webinar-v45
+// the-big-three-webinar-v45  /  the-big-three-webinar-v45-no-shows
+// The no-show reactivation workflow tags the same webinar with its own suffix.
+// Derived here rather than composed inside GHL's tag field: a tag field mixing
+// a merge value with literal text is unverified, and a tag that renders wrong
+// mis-segments people silently instead of erroring.
 const TAG_PREFIX = "the-big-three-webinar-v";
+const NO_SHOW_SUFFIX = "-no-shows";
 
 // ─── Formatting ──────────────────────────────────────────────────────────────
 // Every string below is reproduced from what is already live in GHL. These
@@ -165,7 +170,10 @@ export function desiredValues(startsAt, zoomLink, edition = null) {
   // workflow trigger, so publishing a guessed or blank one would mis-segment
   // people in a way that is tedious to unpick — better to leave the previous
   // tag in place and say so.
-  if (Number.isInteger(edition)) values.webinar_tag = `${TAG_PREFIX}${edition}`;
+  if (Number.isInteger(edition)) {
+    values.webinar_tag = `${TAG_PREFIX}${edition}`;
+    values.webinar_tag_no_shows = `${TAG_PREFIX}${edition}${NO_SHOW_SUFFIX}`;
+  }
   return values;
 }
 
