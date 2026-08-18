@@ -206,7 +206,7 @@ export async function updateWorkshop(id, { localDate, localTime, note, active, e
  * after it counts up from there. Set the anchor's edition by hand once and the
  * whole forward schedule numbers itself.
  */
-export async function renumberUpcoming({ cutoverMinutes = 90 } = {}) {
+export async function renumberUpcoming({ cutoverMinutes = 30 } = {}) {
   const { rows } = await getPool().query(
     `WITH upcoming AS (
        SELECT id, row_number() OVER (ORDER BY local_date, local_time) AS rn

@@ -883,7 +883,7 @@ app.post("/api/schedule", auth.requireAuth, async (req, res) => {
       updatedBy: auth.editorName(req),
     });
     // A new date slots into the sequence and pushes later editions down.
-    await db.renumberUpcoming();
+    await db.renumberUpcoming({ cutoverMinutes: webinarSync.CUTOVER_MIN });
     await scheduleStore.refresh();
     res.json({ workshop: row });  // edition may be re-sequenced by the renumber above; the page reloads either way
   } catch (err) {
@@ -917,7 +917,7 @@ app.patch("/api/schedule/:id", auth.requireAuth, async (req, res) => {
     if (!row) return res.status(404).json({ error: "No such workshop." });
     // Moving a date, or setting the current workshop's edition, re-sequences
     // everything after it.
-    await db.renumberUpcoming();
+    await db.renumberUpcoming({ cutoverMinutes: webinarSync.CUTOVER_MIN });
     await scheduleStore.refresh();
     // Publish immediately rather than waiting up to a minute — pasting the Zoom
     // link is the step everything else was gated on.
@@ -935,7 +935,7 @@ app.delete("/api/schedule/:id", auth.requireAuth, async (req, res) => {
   try {
     const ok = await db.deleteWorkshop(id);
     if (!ok) return res.status(404).json({ error: "No such workshop." });
-    await db.renumberUpcoming();
+    await db.renumberUpcoming({ cutoverMinutes: webinarSync.CUTOVER_MIN });
     await scheduleStore.refresh();
     runWebinarSync().catch(() => {});
     res.json({ ok: true });

@@ -38,7 +38,12 @@ const DURATION_MIN = 120;
 // Deliberately NOT the same as the SMS bot's 24-hour rule (getWorkshopDate in
 // server.js) — the bot needs to keep answering "was that this morning?" long
 // after the marketing pages should have moved on.
-const CUTOVER_MIN = 90;
+//
+// At 30 minutes the webinar is still running (it goes 75-90), so anyone who
+// lands on a page or opens a reminder after the half-hour mark is pointed at
+// the NEXT session rather than the one in progress. That's Jason's call, made
+// 2026-08-17 — late arrivals are worth less than promoting the next one.
+export const CUTOVER_MIN = 30;
 
 // Warn this far ahead if the next workshop still has no Zoom room.
 const ZOOM_WARN_HOURS = 48;
