@@ -29,19 +29,23 @@ const LEAD_DAYS = 21;
 const TOPIC = "The Big Three Mastery Workshop";
 const DURATION_MIN = 120;
 
+/** Credentials present — independent of whether creation is switched on. */
+export function hasCredentials() {
+  return Boolean(
+    process.env.ZOOM_WEBINAR_ACCOUNT_ID &&
+    process.env.ZOOM_WEBINAR_CLIENT_ID &&
+    process.env.ZOOM_WEBINAR_CLIENT_SECRET &&
+    process.env.ZOOM_WEBINAR_HOST
+  );
+}
+
 export function isConfigured() {
   // ZOOM_AUTOCREATE is a deliberate second switch. Credentials alone must not
   // start creating rooms: the first run would happily create one for a
   // workshop that already has a room people were emailed, and replace the link
   // under them. Set it to "true" only once the schedule's existing links are
   // in the database.
-  return Boolean(
-    process.env.ZOOM_AUTOCREATE === "true" &&
-    process.env.ZOOM_WEBINAR_ACCOUNT_ID &&
-    process.env.ZOOM_WEBINAR_CLIENT_ID &&
-    process.env.ZOOM_WEBINAR_CLIENT_SECRET &&
-    process.env.ZOOM_WEBINAR_HOST
-  );
+  return Boolean(process.env.ZOOM_AUTOCREATE === "true" && hasCredentials());
 }
 
 let cachedToken = { value: null, expiresAt: 0 };

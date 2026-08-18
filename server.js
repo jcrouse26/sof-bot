@@ -971,13 +971,16 @@ app.post("/api/webinar-sync/run", auth.requireAuth, async (req, res) => {
 // Setup check for the Zoom app — confirms the credentials work and shows which
 // scopes were actually granted, which is the thing that silently goes wrong.
 app.get("/api/zoom-check", auth.requireAuth, async (req, res) => {
-  if (!zoomWebinars.isConfigured()) {
-    return res.json({ configured: false, detail: "ZOOM_WEBINAR_* vars not set" });
+  if (!zoomWebinars.hasCredentials()) {
+    return res.json({ credentials: false, detail: "ZOOM_WEBINAR_* vars not set" });
   }
   try {
     const scopes = await zoomWebinars.grantedScopes();
     res.json({
-      configured: true,
+      credentials: true,
+      // Credentials and scopes can be perfect while creation stays off — the
+      // switch is what decides whether rooms actually get made.
+      autoCreateEnabled: zoomWebinars.isConfigured(),
       scopes,
       canCreateWebinars: scopes.some((s) => s.startsWith("webinar:write")),
     });
