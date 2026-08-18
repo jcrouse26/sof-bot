@@ -29,6 +29,12 @@ const LEAD_DAYS = 21;
 const TOPIC = "The Big Three Mastery Workshop";
 const DURATION_MIN = 120;
 
+/** Accepts true/TRUE/1/yes/on — a switch that only understands one spelling
+ *  fails silently and looks identical to a variable that was never set. */
+export function autoCreateRequested() {
+  return ["true", "1", "yes", "on"].includes(String(process.env.ZOOM_AUTOCREATE ?? "").trim().toLowerCase());
+}
+
 /** Credentials present — independent of whether creation is switched on. */
 export function hasCredentials() {
   return Boolean(
@@ -45,7 +51,7 @@ export function isConfigured() {
   // workshop that already has a room people were emailed, and replace the link
   // under them. Set it to "true" only once the schedule's existing links are
   // in the database.
-  return Boolean(process.env.ZOOM_AUTOCREATE === "true" && hasCredentials());
+  return Boolean(autoCreateRequested() && hasCredentials());
 }
 
 let cachedToken = { value: null, expiresAt: 0 };
@@ -129,7 +135,7 @@ export async function createWebinar(startsAt) {
  */
 export async function ensureRooms({ listWorkshops, updateWorkshop, notify = async () => {} } = {}) {
   if (!isConfigured()) {
-    const why = process.env.ZOOM_AUTOCREATE === "true" ? "ZOOM_WEBINAR_* not set" : "ZOOM_AUTOCREATE not enabled";
+    const why = autoCreateRequested() ? "ZOOM_WEBINAR_* not set" : "ZOOM_AUTOCREATE not enabled";
     return { status: "skipped", detail: why, created: [] };
   }
 

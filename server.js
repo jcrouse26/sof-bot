@@ -981,6 +981,9 @@ app.get("/api/zoom-check", auth.requireAuth, async (req, res) => {
       // Credentials and scopes can be perfect while creation stays off — the
       // switch is what decides whether rooms actually get made.
       autoCreateEnabled: zoomWebinars.isConfigured(),
+      // Reported separately so "I set the variable" and "the container can see
+      // it" are distinguishable — they are not the same thing on Railway.
+      autoCreateVarSeen: process.env.ZOOM_AUTOCREATE ?? null,
       scopes,
       canCreateWebinars: scopes.some((s) => s.startsWith("webinar:write")),
     });
