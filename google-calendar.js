@@ -49,6 +49,20 @@ export function eventIdFor(workshopId) {
 const DURATION_MIN = 120;
 const HORIZON_DAYS = 90;
 
+/**
+ * Guest notifications are OFF unless explicitly switched on.
+ *
+ * On 2026-08-20 this loop PATCHed all 25 events every 60 seconds with
+ * sendUpdates=all, and Google emailed the guest list on every pass — hundreds
+ * of messages to Emily before it was caught. Attendees added with
+ * sendUpdates=none still get the event on their calendar; they just are not
+ * mailed about it. That is the right default, because the cost of getting this
+ * wrong again is a quiet calendar update rather than a flooded inbox.
+ */
+function notifyMode(explicit) {
+  return process.env.CALENDAR_NOTIFY_GUESTS === "true" && explicit ? "all" : "none";
+}
+
 export function hasClient() {
   return Boolean(process.env.GMAIL_CLIENT_ID && process.env.GMAIL_CLIENT_SECRET);
 }
@@ -188,7 +202,7 @@ export async function syncEvents({ listWorkshops, setEventId, refreshToken, cale
 
     try {
       if (!wantsEvent && hasEvent) {
-        await fetch(`${API}/calendars/${cal}/events/${w.google_event_id}?sendUpdates=all`, {
+        await fetch(`${API}/calendars/${cal}/events/${w.google_event_id}?sendUpdates=${notifyMode(true)}`, {
           method: "DELETE", headers: { Authorization: `Bearer ${token}` },
         });
         await setEventId(w.id, null);
@@ -206,10 +220,10 @@ export async function syncEvents({ listWorkshops, setEventId, refreshToken, cale
       const sig = hash(body) + "." + hash(guestFacing);
       if (hasEvent && w.google_event_sig === sig) continue;
       const guestsCare = !w.google_event_sig || w.google_event_sig.split(".")[1] !== hash(guestFacing);
-      const sendUpdates = guestsCare ? "all" : "none";
+      const sendUpdates = notifyMode(guestsCare);
       const url = hasEvent
         ? `${API}/calendars/${cal}/events/${w.google_event_id}?sendUpdates=${sendUpdates}`
-        : `${API}/calendars/${cal}/events?sendUpdates=all`;
+        : `${API}/calendars/${cal}/events?sendUpdates=${notifyMode(true)}`;
       const res = await fetch(url, {
         method: hasEvent ? "PATCH" : "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
