@@ -86,20 +86,45 @@ function getLiveWorkshop() {
   return null;
 }
 
+// ─── Workshop time labels ────────────────────────────────────────────────────
+// Every workshop time in the prompt is derived from the scheduled instant.
+// These were hardcoded to 9am, which was true until the schedule started
+// carrying 3pm and 4pm sessions — at which point the bot confidently told
+// registrants the wrong hour.
+
+function clockIn(date, tz) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true,
+  }).formatToParts(date);
+  const get = (t) => parts.find((x) => x.type === t)?.value ?? "";
+  const period = get("dayPeriod").toLowerCase().replace(/[\s.]/g, "");
+  const minute = get("minute");
+  return minute === "00" ? `${get("hour")}${period}` : `${get("hour")}:${minute}${period}`;
+}
+
+/** "3pm" — Pacific, the house default for talking about times. */
+function ptLabel(date) { return clockIn(date, "America/Los_Angeles"); }
+
+/** "3pm PT (4pm MT / 5pm CT / 6pm ET)" */
+function allZonesLabel(date) {
+  return `${ptLabel(date)} PT (${clockIn(date, "America/Denver")} MT / ` +
+         `${clockIn(date, "America/Chicago")} CT / ${clockIn(date, "America/New_York")} ET)`;
+}
+
 // ─── System prompt ───────────────────────────────────────────────────────────
 
 
-function buildKnowledgeBase({ workshopDateLabel, workshopDayOfWeek, makeupDateLabel, bookingLink }) {
+function buildKnowledgeBase({ workshopDateLabel, workshopDayOfWeek, makeupDateLabel, bookingLink, startTimeLine, startTimePT, makeupTimePT }) {
   return `- Name: The Big Three Mastery Workshop
 - Host: Jason Crouse
 - Date: ${workshopDateLabel}
-- Start time: 9am PT (10am MT / 11am CT / 12pm ET)
+- Start time: ${startTimeLine}
 - Day: ${workshopDayOfWeek}
 - Cost: free
 - Length: about 75-90 minutes
 - Platform: Zoom
 - Zoom link delivery: emailed at registration, and texted the morning of the event
-- Zoom room: opens when we go live at 9am PT — not before
+- Zoom room: opens when we go live at ${startTimePT} PT — not before
 - Topics: the Big Three — turning your calling into an actual career, attracting the right kind of love, building real confidence by keeping promises to yourself
 - Format: Jason is live; asks audience questions, reads and responds to chat throughout; dedicated Q&A at the end
 - Joining late: totally fine, just jump on when you can
@@ -108,7 +133,7 @@ function buildKnowledgeBase({ workshopDateLabel, workshopDayOfWeek, makeupDateLa
 - Mobile: Zoom works on iPhone and Android
 - Confirmation email: check spam first; ask what email they registered with so Jason's team can resend if needed
 - Replay: we do send it out — within 24-48 hours after the workshop, to the email they registered with
-- Make-up workshop: ${makeupDateLabel} at 9am PT
+- Make-up workshop: ${makeupDateLabel} at ${makeupTimePT} PT
 - Future workshops / registration: webinar.saintsofflow.com
 - Coaching call booking link: ${bookingLink}
 - Financial barriers: lower-cost and sliding scale options exist for people who want to invest but face financial constraints`;
@@ -123,6 +148,9 @@ async function buildSystemPrompt(mockNow = null, mockMakeupISO = null, mockWorks
   const workshopDayOfWeek = workshopTime.toLocaleDateString("en-US", { weekday: "long", timeZone: "America/Los_Angeles" });
   const workshopDateLabel = workshopTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" });
   const workshopShortDate = workshopTime.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "America/Los_Angeles" });
+  const startTimePT = ptLabel(workshopTime);
+  const startTimeET = clockIn(workshopTime, "America/New_York");
+  const startTimeLine = allZonesLabel(workshopTime);
 
   // Make-up = next date in the schedule after this workshop (falls back to next Saturday)
   // mockMakeupISO allows QA tests to override the makeup date to test different day-of-week scenarios
@@ -154,11 +182,11 @@ async function buildSystemPrompt(mockNow = null, mockMakeupISO = null, mockWorks
   } else if (isWorkshopDay && minutesUntil <= 60) {
     timeContext = `TODAY is the workshop day (${workshopDateLabel}). It starts in ${minutesUntil} minutes — almost live!`;
   } else if (isWorkshopDay) {
-    timeContext = `TODAY is the workshop day (${workshopDateLabel}). It starts at 9am pt — hasn't started yet.`;
+    timeContext = `TODAY is the workshop day (${workshopDateLabel}). It starts at ${startTimePT} pt — hasn't started yet.`;
   } else if (minutesUntil <= 60 * 24) {
-    timeContext = `The workshop is TOMORROW, ${workshopDateLabel}, at 9am pt.`;
+    timeContext = `The workshop is TOMORROW, ${workshopDateLabel}, at ${startTimePT} pt.`;
   } else {
-    timeContext = `The workshop is on ${workshopDateLabel} at 9am pt — ${daysUntil} days from now.`;
+    timeContext = `The workshop is on ${workshopDateLabel} at ${startTimePT} pt — ${daysUntil} days from now.`;
   }
 
   // Precompute sign-off phrase — LLM must use this exactly, not guess
@@ -180,7 +208,10 @@ async function buildSystemPrompt(mockNow = null, mockMakeupISO = null, mockWorks
   }
 
   // Build and cache knowledge base (also used by validator)
-  const knowledgeBase = buildKnowledgeBase({ workshopDateLabel, workshopDayOfWeek, makeupDateLabel, bookingLink: BOOKING_LINK });
+  const knowledgeBase = buildKnowledgeBase({
+    workshopDateLabel, workshopDayOfWeek, makeupDateLabel, bookingLink: BOOKING_LINK,
+    startTimeLine, startTimePT, makeupTimePT: ptLabel(makeupWorkshopTime),
+  });
 
   return `<role>
 You are a member of Jason Crouse's team at Saints of Flow — texting with people who registered for the Big Three Mastery Workshop. You are acting as a human. The contact does not know they are talking to a bot.
@@ -203,7 +234,7 @@ ${signOffInstruction}
 <journey>
 Typical sequence for each registrant — helps you understand where they are and what they're responding to:
 
-1. REGISTRATION (week out): We send a seat confirmation — "Hey! it's Jason Crouse. I just saved your seat for my upcoming Big Three Mastery Workshop. Mark your calendar for ${workshopDateLabel}, at 9am PST. I also sent you an email with important details, so make sure to open that before we go live!"
+1. REGISTRATION (week out): We send a seat confirmation — "Hey! it's Jason Crouse. I just saved your seat for my upcoming Big Three Mastery Workshop. Mark your calendar for ${workshopDateLabel}, at ${startTimePT} PT. I also sent you an email with important details, so make sure to open that before we go live!"
    → They may reply with logistics questions, excitement, or nothing.
 
 2. DAY BEFORE: We send a "can't wait to see you tomorrow" check-in. Our team also does phone calls to registrants.
@@ -212,7 +243,7 @@ Typical sequence for each registrant — helps you understand where they are and
 3. DAY OF — 30 MINS BEFORE: We text the Zoom link. "Hey! We're live with The Big Three Mastery Workshop in 30 mins. As promised, your link: [zoom link]"
    → They may try to join early and get blocked, ask questions, or confirm receipt.
 
-4. LIVE (9am–~10:30am PT): Workshop is happening. Jason is live, engaging with chat, taking questions.
+4. LIVE (from ${startTimePT} PT, about 90 minutes): Workshop is happening. Jason is live, engaging with chat, taking questions.
 
 5. POST-WORKSHOP: We send a survey asking them to reply 1, 2, 3, or 4 about where they're at.
    1 = didn't find it valuable
@@ -276,7 +307,7 @@ DEFER — [UNSURE] only, no reply sent, team alerted for manual follow-up. For a
 Predefined scenarios with explicit rules — matched by reading the last outbound message and the person's reply. When a match is found, follow it exactly.
 
 PRE-WORKSHOP QUESTIONS:
-- Time → 9am pt / 12pm et. Other time zones only if asked.
+- Time → ${startTimePT} pt / ${startTimeET} et. Other time zones only if asked.
 - Zoom link → it's in their confirmation email; we also text it the morning of the workshop. Can't find it: check spam, ask what email they used so team can resend.
 - "Will you be sending a link?" → yes, we'll text it the morning of. It's also in their confirmation email.
 - "I have the link / got the link" → Empathize, nothing else needed.
@@ -286,7 +317,7 @@ PRE-WORKSHOP QUESTIONS:
 - Confirmation email → check spam first. Ask what email they used so team can resend.
 - Length → about 75-90 minutes.
 - Joining late → totally fine, just jump on when you can.
-- Zoom won't let them join yet → the room opens when we go live at 9am pt. Try again at 9am.
+- Zoom won't let them join yet → the room opens when we go live at ${startTimePT} pt. Try again at ${startTimePT}.
 - Cost → completely free.
 - What to bring → just themselves, maybe pen and paper, somewhere they can focus.
 - Future workshops → webinar.saintsofflow.com.
@@ -823,6 +854,11 @@ app.get("/workshop-info", async (req, res) => {
       workshopDay: workshopTime.toLocaleDateString("en-US", { weekday: "long", timeZone: "America/Los_Angeles" }),
       workshopDateLabel: workshopTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" }),
       makeupDateLabel: makeupTime.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/Los_Angeles" }),
+      // Surfaced so a wrong hour is visible at a glance rather than only
+      // inside a text someone already received.
+      workshopTimePT: ptLabel(workshopTime),
+      workshopTimeAllZones: allZonesLabel(workshopTime),
+      makeupTimePT: ptLabel(makeupTime),
       workshopISO: workshopTime.toISOString(),
     });
   } catch (err) {

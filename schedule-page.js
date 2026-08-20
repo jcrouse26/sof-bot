@@ -290,8 +290,8 @@ async function loadLive() {
   try {
     const r = await fetch("/workshop-info");
     const d = await r.json();
-    document.getElementById("live-next").textContent = d.workshopDateLabel || "—";
-    document.getElementById("live-makeup").textContent = d.makeupDateLabel || "—";
+    document.getElementById("live-next").textContent = (d.workshopDateLabel || "—") + (d.workshopTimePT ? " · " + d.workshopTimePT + " PT" : "");
+    document.getElementById("live-makeup").textContent = (d.makeupDateLabel || "—") + (d.makeupTimePT ? " · " + d.makeupTimePT + " PT" : "");
   } catch (e) {
     document.getElementById("live-next").textContent = "unavailable";
   }
