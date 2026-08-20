@@ -297,7 +297,7 @@ var teamSaved = [];
 
 function teamDirty() { return teamEmails.join(",") !== teamSaved.join(","); }
 
-function validEmail(e) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e); }
+function validEmail(e) { return /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(e); }
 
 function focusTeamInput(ev) {
   if (ev && ev.target && ev.target.tagName === "BUTTON") return;
@@ -348,7 +348,7 @@ function commitTeamInput(quiet) {
   if (!input) return;
   var raw = input.value.trim();
   if (!raw) return;
-  var parts = raw.split(/[,;\s]+/).filter(Boolean);
+  var parts = raw.split(/[,;\\s]+/).filter(Boolean);
   var bad = [];
   var addedAny = false;
   for (var i = 0; i < parts.length; i++) {
