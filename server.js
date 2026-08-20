@@ -990,10 +990,15 @@ app.get("/api/webinar-sync", auth.requireAuth, async (req, res) => {
 // Force a real sync — the "just push it now" button.
 app.post("/api/webinar-sync/run", auth.requireAuth, async (req, res) => {
   try {
-    if (teamInvites.isConfigured()) {
+    if (teamInvites.hasMailCredentials()) {
     const inv = await teamInvites.sendInvites({
       listWorkshops: db.listWorkshops,
       markInvited: db.markInvited,
+      // Recipients live in the database so the team can edit them at
+      // /schedule; the env var is only a seed for a fresh install.
+      emails: teamInvites.parseRecipients(
+        await db.getSetting("team_invite_emails", process.env.TEAM_INVITE_EMAILS || "")
+      ),
       notify: sendSlackMessage,
     });
     if (inv.status !== "in-sync") console.log(`[invites] ${inv.status}: ${inv.detail}`);
@@ -1023,6 +1028,36 @@ app.get("/workshops.ics", async (req, res) => {
   } catch (err) {
     console.error("[ics] feed failed:", err.message);
     res.status(500).send("Calendar unavailable");
+  }
+});
+
+app.get("/api/team-emails", auth.requireAuth, async (req, res) => {
+  try {
+    const raw = await db.getSetting("team_invite_emails", process.env.TEAM_INVITE_EMAILS || "");
+    res.json({
+      emails: teamInvites.parseRecipients(raw),
+      mailReady: teamInvites.hasMailCredentials(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/team-emails", auth.requireAuth, async (req, res) => {
+  const emails = teamInvites.parseRecipients(req.body?.emails);
+  const supplied = String(req.body?.emails || "").split(/[,;\s]+/).filter(Boolean).length;
+  if (supplied && !emails.length) {
+    return res.status(400).json({ error: "None of those look like email addresses." });
+  }
+  try {
+    await db.setSetting("team_invite_emails", emails.join(", "), auth.editorName(req));
+    // A new teammate has no invites at all, so the only way to hand them the
+    // schedule is to send again. Everyone else gets an update, not a duplicate.
+    const reset = await db.resetUpcomingInvites({ cutoverMinutes: webinarSync.CUTOVER_MIN });
+    runWebinarSync().catch(() => {});
+    res.json({ emails, resending: reset });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

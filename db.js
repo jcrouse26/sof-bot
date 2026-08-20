@@ -103,6 +103,18 @@ export async function initSchema() {
         ADD COLUMN IF NOT EXISTS invite_sent_at TIMESTAMPTZ,
         ADD COLUMN IF NOT EXISTS invite_sequence INTEGER
     `);
+    // Small key/value store for things the team edits in the app rather than
+    // in Railway — starting with who gets calendar invites. A settings row
+    // beats an env var here: changing it must not require a redeploy, and the
+    // person changing it isn't necessarily the person with Railway access.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key        TEXT PRIMARY KEY,
+        value      TEXT        NOT NULL DEFAULT '',
+        updated_by TEXT        NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS workshops_slot_idx
         ON workshops (local_date, local_time)
@@ -219,6 +231,38 @@ export async function updateWorkshop(id, { localDate, localTime, note, active, e
 /** Records that the team has been invited at this SEQUENCE. Deliberately does
  *  NOT touch updated_at — that column is the "changed since we last invited?"
  *  signal, and bumping it here would re-trigger the send forever. */
+export async function getSetting(key, fallback = "") {
+  const { rows } = await getPool().query(`SELECT value FROM app_settings WHERE key = $1`, [key]);
+  return rows[0]?.value ?? fallback;
+}
+
+export async function setSetting(key, value, updatedBy = "") {
+  await getPool().query(
+    `INSERT INTO app_settings (key, value, updated_by, updated_at)
+     VALUES ($1, $2, $3, now())
+     ON CONFLICT (key) DO UPDATE SET value = $2, updated_by = $3, updated_at = now()`,
+    [key, String(value ?? ""), updatedBy]
+  );
+}
+
+/**
+ * Clear the invite watermark on upcoming workshops so they're all re-sent.
+ *
+ * Called when the recipient list changes: a newly added teammate has no
+ * invites at all, and the only way to give them the schedule is to send again.
+ * Everyone already invited receives an update rather than a duplicate, because
+ * the UID is unchanged and the sequence still advances.
+ */
+export async function resetUpcomingInvites({ cutoverMinutes = 30 } = {}) {
+  const { rowCount } = await getPool().query(
+    `UPDATE workshops SET invite_sent_at = NULL
+     WHERE (local_date + local_time) AT TIME ZONE '${TZ}' > now() - ($1 || ' minutes')::interval
+       AND invite_sent_at IS NOT NULL`,
+    [String(cutoverMinutes)]
+  );
+  return rowCount;
+}
+
 export async function markInvited(id, sequence) {
   await getPool().query(
     `UPDATE workshops SET invite_sent_at = now(), invite_sequence = $2 WHERE id = $1`,

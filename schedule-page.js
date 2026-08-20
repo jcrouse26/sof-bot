@@ -155,6 +155,18 @@ export function adminPage({ name = "" } = {}) {
         No upcoming workshops. The bot will fall back to “next Saturday at 9am PT”.
       </div>
     </div>
+    <div class="card" id="team-card" style="margin-top:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+        <div>
+          <div style="font-size:13px;font-weight:500">Team calendar invites</div>
+          <div class="note" id="team-hint">Everyone listed gets a calendar invite for each workshop, and an update whenever one moves.</div>
+        </div>
+        <button class="icon" onclick="saveTeam()" id="team-save" style="color:var(--gold)">save</button>
+      </div>
+      <input type="text" id="team-emails" placeholder="alvaro@saintsofflow.com, jason@saintsofflow.com"/>
+      <div class="note" style="margin-top:8px;font-size:12px">Saving re-sends invites to everyone so a new teammate gets the full schedule. Existing invites update in place rather than duplicating.</div>
+    </div>
+
     <div id="feed-row" style="display:none;align-items:center;gap:10px;margin:14px 0 4px">
       <span class="note" style="white-space:nowrap">Subscribe in Google Calendar →</span>
       <input type="text" id="feed-url" readonly onclick="this.select()" style="flex:1;font-size:12px"/>
@@ -273,6 +285,40 @@ function copyFeed() {
   navigator.clipboard.writeText(el.value).then(() => flash("Calendar URL copied. In Google Calendar: Other calendars → From URL.", true));
 }
 
+async function loadTeam() {
+  try {
+    const r = await fetch("/api/team-emails");
+    if (!r.ok) return;
+    const d = await r.json();
+    document.getElementById("team-emails").value = (d.emails || []).join(", ");
+    if (!d.mailReady) {
+      document.getElementById("team-hint").innerHTML =
+        '<span style="color:var(--red)">Gmail credentials not set on this service — invites cannot send yet.</span>';
+      document.getElementById("team-save").disabled = true;
+    }
+  } catch (e) { /* the schedule still works without this */ }
+}
+
+async function saveTeam() {
+  const btn = document.getElementById("team-save");
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/team-emails", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ emails: document.getElementById("team-emails").value }),
+    });
+    const body = await res.json();
+    if (!res.ok) return flash(body.error || "Could not save.", false);
+    document.getElementById("team-emails").value = (body.emails || []).join(", ");
+    flash(body.emails.length
+      ? "Saved " + body.emails.length + " recipient" + (body.emails.length === 1 ? "" : "s") + ". Invites sending now."
+      : "Cleared — no invites will be sent.", true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function load() {
   const res = await fetch("/api/schedule");
   if (res.status === 401) { location.reload(); return; }
@@ -289,6 +335,7 @@ async function load() {
   badge.className = "badge" + (data.meta.source === "database" ? "" : " warn");
   render();
   loadLive();
+  loadTeam();
 }
 
 async function loadLive() {

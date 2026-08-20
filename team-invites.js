@@ -28,16 +28,21 @@ const DURATION_MIN = 120;
 // would otherwise mail an invite for every past workshop still in the table.
 const HORIZON_DAYS = 60;
 
-export function recipients() {
-  return String(process.env.TEAM_INVITE_EMAILS || "")
-    .split(/[,\s]+/)
-    .map((e) => e.trim().toLowerCase())
-    .filter((e) => e.includes("@"));
+/** Parse a stored or env-supplied list. Tolerant of commas, spaces, newlines
+ *  and semicolons, because people paste address lists from anywhere. */
+export function parseRecipients(raw) {
+  return [...new Set(
+    String(raw || "")
+      .split(/[,;\s]+/)
+      .map((e) => e.trim().toLowerCase())
+      .filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e))
+  )];
 }
 
-export function isConfigured() {
+/** Gmail credentials only — the recipient list now lives in the database and
+ *  is passed in, so it isn't part of "is this configured". */
+export function hasMailCredentials() {
   return Boolean(
-    recipients().length &&
     process.env.GMAIL_CLIENT_ID &&
     process.env.GMAIL_CLIENT_SECRET &&
     process.env.GMAIL_REFRESH_TOKEN &&
@@ -177,11 +182,9 @@ function prettyWhen(startsAt) {
  * @param {function} opts.listWorkshops async ({activeOnly}) => rows
  * @param {function} opts.markInvited   async (id, sequence) => void
  */
-export async function sendInvites({ listWorkshops, markInvited, notify = async () => {} } = {}) {
-  if (!isConfigured()) {
-    const why = recipients().length ? "GMAIL_* not set" : "TEAM_INVITE_EMAILS not set";
-    return { status: "skipped", detail: why, sent: [] };
-  }
+export async function sendInvites({ listWorkshops, markInvited, emails = [], notify = async () => {} } = {}) {
+  if (!hasMailCredentials()) return { status: "skipped", detail: "GMAIL_* not set", sent: [] };
+  if (!emails.length) return { status: "skipped", detail: "no team emails set", sent: [] };
 
   let rows;
   try {
@@ -191,7 +194,7 @@ export async function sendInvites({ listWorkshops, markInvited, notify = async (
   }
 
   const from = process.env.GMAIL_USER;
-  const to = recipients();
+  const to = emails;
   const horizon = Date.now() + HORIZON_DAYS * 86_400_000;
   const sent = [];
 
