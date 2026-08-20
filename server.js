@@ -1086,6 +1086,25 @@ app.get("/api/google-status", auth.requireAuth, async (req, res) => {
   }
 });
 
+// Repair route: sweep the calendar clean of workshop events, then let the
+// sync rebuild one per workshop. Dry-run by default so it can be inspected.
+app.post("/api/google-calendar/rebuild", auth.requireAuth, async (req, res) => {
+  try {
+    const refresh = await db.getSetting("google_refresh_token");
+    const result = await googleCal.purgeWorkshopEvents({
+      listWorkshops: db.listWorkshops,
+      clearEventIds: db.clearEventIds,
+      refreshToken: refresh,
+      calendarId: await db.getSetting("google_calendar_id", "primary"),
+      dryRun: req.body?.confirm !== true,
+    });
+    if (req.body?.confirm === true) runWebinarSync().catch(() => {});
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.put("/api/google-calendar", auth.requireAuth, async (req, res) => {
   try {
     await db.setSetting("google_calendar_id", String(req.body?.calendarId || "primary"), auth.editorName(req));

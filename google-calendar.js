@@ -233,3 +233,58 @@ export async function syncEvents({ listWorkshops, setEventId, refreshToken, cale
   }
   return finish(changed.length ? "changed" : "in-sync", `${changed.length} change(s)`, { changed });
 }
+
+/**
+ * One-shot repair: remove every workshop event this app has put on the
+ * calendar, so the next sync recreates exactly one per workshop under a
+ * deterministic id.
+ *
+ * Matching is deliberately narrow — the summary must start with the workshop
+ * title AND the start time must be one the schedule actually holds. A stray
+ * meeting that merely mentions the workshop is left alone.
+ *
+ * Deletes are sent with sendUpdates=none: guests already received invitations
+ * for these, and a cancellation storm followed by a re-invitation storm is a
+ * worse experience than the duplicates being repaired.
+ */
+export async function purgeWorkshopEvents({ listWorkshops, clearEventIds, refreshToken, calendarId = "primary", dryRun = false } = {}) {
+  if (!hasClient() || !refreshToken) return { status: "skipped", detail: "not connected", removed: 0 };
+
+  const rows = await listWorkshops({ activeOnly: false });
+  const scheduleStarts = new Set(rows.map((w) => new Date(w.starts_at).getTime()));
+  const token = await accessToken(refreshToken);
+  const cal = encodeURIComponent(calendarId);
+
+  const timeMin = new Date(Date.now() - 2 * 86_400_000).toISOString();
+  const timeMax = new Date(Date.now() + HORIZON_DAYS * 86_400_000).toISOString();
+
+  const matches = [];
+  let pageToken = "";
+  do {
+    const url = `${API}/calendars/${cal}/events?singleEvents=true&maxResults=250` +
+      `&timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}` +
+      (pageToken ? `&pageToken=${pageToken}` : "");
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const body = await res.json();
+    if (!res.ok) throw new Error(`events.list ${res.status}: ${body?.error?.message || ""}`);
+    for (const ev of body.items || []) {
+      if (!String(ev.summary || "").startsWith(TITLE)) continue;
+      const startsAt = new Date(ev.start?.dateTime || ev.start?.date || 0).getTime();
+      if (!scheduleStarts.has(startsAt)) continue;
+      matches.push({ id: ev.id, summary: ev.summary, start: ev.start?.dateTime });
+    }
+    pageToken = body.nextPageToken || "";
+  } while (pageToken);
+
+  if (dryRun) return { status: "dry-run", detail: `${matches.length} event(s) would be removed`, removed: 0, matches };
+
+  let removed = 0;
+  for (const ev of matches) {
+    const res = await fetch(`${API}/calendars/${cal}/events/${ev.id}?sendUpdates=none`, {
+      method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok || res.status === 410) removed++;   // 410 = already gone
+  }
+  await clearEventIds();
+  return { status: "purged", detail: `${removed} event(s) removed`, removed };
+}
