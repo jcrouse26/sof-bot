@@ -129,7 +129,18 @@ export async function createWebinar(startsAt) {
     throw new Error(`Zoom create failed: ${res.status} ${body.message || ""}`.trim());
   }
   // start_url is a host credential — deliberately not returned or stored.
-  const publicUrl = body.registration_url || body.join_url;
+  //
+  // Publish the short /w/{id} form rather than the long registration URL. Both
+  // land on the same registration page (verified: /w/ 302s to it), but this one
+  // goes out in SMS, where a 60-character URL is most of the message. It also
+  // matches the format the team has been sending by hand for 45 webinars.
+  //
+  // Only safe while registration is required. Without it Zoom hands out /j/
+  // links and /w/ has nothing to resolve to, so fall back rather than guess.
+  const host = new URL(body.registration_url || body.join_url).host;
+  const publicUrl = body.registration_url
+    ? `https://${host}/w/${body.id}`
+    : body.join_url;
   if (!publicUrl) throw new Error(`Zoom returned no usable URL for webinar ${body.id}`);
   return { id: String(body.id), joinUrl: publicUrl };
 }
