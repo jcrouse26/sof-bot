@@ -133,7 +133,14 @@ export function buildInvite(workshop, { method = "REQUEST", sequence = 0, organi
     fold(`DESCRIPTION:${esc(description)}`),
     workshop.zoom_link ? fold(`LOCATION:${esc(workshop.zoom_link)}`) : null,
     `ORGANIZER;CN=Jason Crouse:mailto:${organizer}`,
-    ...to.map((e) => fold(`ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${e}`)),
+    // The organizer appears as an accepted chair rather than a pending
+    // invitee — otherwise Jason's own calendar asks him to RSVP to a workshop
+    // he is running. Everyone else gets a normal request.
+    ...to.map((e) =>
+      e.toLowerCase() === String(organizer).toLowerCase()
+        ? fold(`ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=CHAIR;PARTSTAT=ACCEPTED;RSVP=FALSE:mailto:${e}`)
+        : fold(`ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${e}`)
+    ),
     `STATUS:${method === "CANCEL" ? "CANCELLED" : "CONFIRMED"}`,
     "TRANSP:OPAQUE",
     "BEGIN:VALARM",
