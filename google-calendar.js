@@ -94,7 +94,10 @@ export async function listCalendars(refreshToken) {
     headers: { Authorization: `Bearer ${token}` },
   });
   const body = await res.json();
-  if (!res.ok) throw new Error(`calendarList failed: ${res.status}`);
+  // Carry Google's own message through — "Google Calendar API has not been
+  // used in project X before or it is disabled" is the whole diagnosis, and
+  // a bare status code throws that away.
+  if (!res.ok) throw new Error(`calendarList ${res.status}: ${body?.error?.message || JSON.stringify(body).slice(0, 200)}`);
   return (body.items || []).map((c) => ({ id: c.id, name: c.summary, primary: !!c.primary }));
 }
 
@@ -123,16 +126,21 @@ function eventFor(workshop, attendees) {
  * Create or update the event for each upcoming workshop; cancel deactivated
  * ones. Never throws.
  */
+let lastState = { at: null, status: "never run", detail: null };
+export function getStatus() { return lastState; }
+
 export async function syncEvents({ listWorkshops, setEventId, refreshToken, calendarId = "primary", attendees = [], notify = async () => {} } = {}) {
-  if (!hasClient() || !refreshToken) {
-    return { status: "skipped", detail: "Google Calendar not connected", changed: [] };
-  }
+  const finish = (status, detail, extra = {}) => {
+    lastState = { at: new Date().toISOString(), status, detail };
+    return { status, detail, changed: [], ...extra };
+  };
+  if (!hasClient() || !refreshToken) return finish("skipped", "Google Calendar not connected");
 
   let rows;
   try {
     rows = await listWorkshops({ activeOnly: false });
   } catch (err) {
-    return { status: "error", detail: `schedule read failed: ${err.message}`, changed: [] };
+    return finish("error", `schedule read failed: ${err.message}`);
   }
 
   let token;
@@ -140,7 +148,7 @@ export async function syncEvents({ listWorkshops, setEventId, refreshToken, cale
     token = await accessToken(refreshToken);
   } catch (err) {
     await notify(`🛑 *Google Calendar disconnected* — ${err.message}\nReconnect at /schedule.`);
-    return { status: "error", detail: err.message, changed: [] };
+    return finish("error", err.message);
   }
 
   const horizon = Date.now() + HORIZON_DAYS * 86_400_000;
@@ -191,7 +199,7 @@ export async function syncEvents({ listWorkshops, setEventId, refreshToken, cale
       }
     } catch (err) {
       await notify(`🛑 *Google Calendar sync failed* for ${w.local_date}: ${err.message}`);
-      return { status: "error", detail: err.message, changed };
+      return finish("error", err.message, { changed });
     }
   }
 
@@ -199,5 +207,5 @@ export async function syncEvents({ listWorkshops, setEventId, refreshToken, cale
   if (created.length) {
     await notify(`📅 *Google Calendar updated* — ${created.length} workshop(s) added.`);
   }
-  return { status: changed.length ? "changed" : "in-sync", detail: `${changed.length} change(s)`, changed };
+  return finish(changed.length ? "changed" : "in-sync", `${changed.length} change(s)`, { changed });
 }

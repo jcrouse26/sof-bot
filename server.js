@@ -1073,9 +1073,14 @@ app.get("/api/google-status", auth.requireAuth, async (req, res) => {
     const refresh = await db.getSetting("google_refresh_token");
     const calendarId = await db.getSetting("google_calendar_id", "primary");
     if (!refresh) return res.json({ connected: false, hasClient: googleCal.hasClient() });
+    // Report the failure rather than swallowing it: "connected, no calendars"
+    // is indistinguishable from a revoked token, a missing scope and a
+    // Calendar API that was never enabled on the project.
     let calendars = [];
-    try { calendars = await googleCal.listCalendars(refresh); } catch (e) { /* token may be revoked */ }
-    res.json({ connected: true, hasClient: true, calendarId, calendars });
+    let calendarError = null;
+    try { calendars = await googleCal.listCalendars(refresh); }
+    catch (e) { calendarError = e.message; }
+    res.json({ connected: true, hasClient: true, calendarId, calendars, calendarError, lastSync: googleCal.getStatus() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
