@@ -178,6 +178,7 @@ export function adminPage({ name = "" } = {}) {
 
 <script>
 let rows = [];
+let cutoverMinutes = 30;
 let armed = null;   // id of the delete button waiting for a second click
 
 function flash(text, ok) {
@@ -228,7 +229,10 @@ function editedBy(r) {
 
 function render() {
   const now = Date.now();
-  const cutoff = now - 24 * 3600 * 1000;
+  // Same cutover the bot and the GHL values use, sent by the server so this
+  // can't drift. A workshop drops to Past 30 minutes after it starts, rather
+  // than lingering at the top of Upcoming for a full day.
+  const cutoff = now - (cutoverMinutes * 60 * 1000);
   const up = rows.filter(r => new Date(r.starts_at).getTime() > cutoff);
   const past = rows.filter(r => new Date(r.starts_at).getTime() <= cutoff).reverse();
 
@@ -274,6 +278,7 @@ async function load() {
   if (res.status === 401) { location.reload(); return; }
   const data = await res.json();
   rows = data.workshops || [];
+  if (Number.isFinite(data.cutoverMinutes)) cutoverMinutes = data.cutoverMinutes;
   if (data.feedUrl) {
     const el = document.getElementById("feed-url");
     el.value = data.feedUrl;

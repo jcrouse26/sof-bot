@@ -48,6 +48,8 @@ const SELECT_COLUMNS = `
   note,
   active,
   edition,
+  invite_sent_at,
+  invite_sequence,
   zoom_link,
   zoom_webinar_id,
   updated_by,
@@ -92,6 +94,14 @@ export async function initSchema() {
     await client.query(`
       ALTER TABLE workshops
         ADD COLUMN IF NOT EXISTS edition INTEGER
+    `);
+    // Team calendar invites. invite_sequence must only ever increase — a
+    // calendar ignores a re-sent invitation whose SEQUENCE hasn't advanced,
+    // so this is what makes "we moved the workshop" move on their side too.
+    await client.query(`
+      ALTER TABLE workshops
+        ADD COLUMN IF NOT EXISTS invite_sent_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS invite_sequence INTEGER
     `);
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS workshops_slot_idx
@@ -206,6 +216,16 @@ export async function updateWorkshop(id, { localDate, localTime, note, active, e
  * after it counts up from there. Set the anchor's edition by hand once and the
  * whole forward schedule numbers itself.
  */
+/** Records that the team has been invited at this SEQUENCE. Deliberately does
+ *  NOT touch updated_at — that column is the "changed since we last invited?"
+ *  signal, and bumping it here would re-trigger the send forever. */
+export async function markInvited(id, sequence) {
+  await getPool().query(
+    `UPDATE workshops SET invite_sent_at = now(), invite_sequence = $2 WHERE id = $1`,
+    [id, sequence]
+  );
+}
+
 export async function renumberUpcoming({ cutoverMinutes = 30 } = {}) {
   const { rows } = await getPool().query(
     `WITH upcoming AS (

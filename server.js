@@ -7,6 +7,7 @@ import { loginPage, adminPage } from "./schedule-page.js";
 import * as webinarSync from "./webinar-sync.js";
 import * as zoomWebinars from "./zoom-webinars.js";
 import { buildFeed } from "./workshops-ics.js";
+import * as teamInvites from "./team-invites.js";
 
 const app = express();
 app.use(express.json());
@@ -895,7 +896,8 @@ app.get("/api/schedule", auth.requireAuth, async (req, res) => {
     // Google Calendar refuses to subscribe to a non-HTTPS feed.
     const proto = req.get("x-forwarded-proto")?.split(",")[0] || req.protocol;
     const feedUrl = key ? `${proto}://${req.get("host")}/workshops.ics?key=${key}` : null;
-    res.json({ workshops, meta: scheduleStore.getMeta(), feedUrl });
+    // Sent so the page can't drift from the cutover the bot and GHL use.
+    res.json({ workshops, meta: scheduleStore.getMeta(), feedUrl, cutoverMinutes: webinarSync.CUTOVER_MIN });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -988,7 +990,16 @@ app.get("/api/webinar-sync", auth.requireAuth, async (req, res) => {
 // Force a real sync — the "just push it now" button.
 app.post("/api/webinar-sync/run", auth.requireAuth, async (req, res) => {
   try {
-    const state = await webinarSync.reconcile({
+    if (teamInvites.isConfigured()) {
+    const inv = await teamInvites.sendInvites({
+      listWorkshops: db.listWorkshops,
+      markInvited: db.markInvited,
+      notify: sendSlackMessage,
+    });
+    if (inv.status !== "in-sync") console.log(`[invites] ${inv.status}: ${inv.detail}`);
+  }
+
+  const state = await webinarSync.reconcile({
       listWorkshops: db.listWorkshops,
       notify: sendSlackMessage,
     });
