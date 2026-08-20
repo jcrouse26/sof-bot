@@ -1015,21 +1015,7 @@ app.get("/api/webinar-sync", auth.requireAuth, async (req, res) => {
 // Force a real sync — the "just push it now" button.
 app.post("/api/webinar-sync/run", auth.requireAuth, async (req, res) => {
   try {
-    if (teamInvites.hasMailCredentials()) {
-    const inv = await teamInvites.sendInvites({
-      listWorkshops: db.listWorkshops,
-      markInvited: db.markInvited,
-      // Recipients live in the database so the team can edit them at
-      // /schedule; the env var is only a seed for a fresh install.
-      emails: teamInvites.parseRecipients(
-        await db.getSetting("team_invite_emails", process.env.TEAM_INVITE_EMAILS || "")
-      ),
-      notify: sendSlackMessage,
-    });
-    if (inv.status !== "in-sync") console.log(`[invites] ${inv.status}: ${inv.detail}`);
-  }
-
-  const state = await webinarSync.reconcile({
+    const state = await webinarSync.reconcile({
       listWorkshops: db.listWorkshops,
       notify: sendSlackMessage,
     });
@@ -1380,6 +1366,20 @@ async function runWebinarSync() {
     });
     if (z.status !== "in-sync") console.log(`[zoom] ${z.status}: ${z.detail}`);
     if (z.created.length) await scheduleStore.refresh();
+  }
+
+  if (teamInvites.hasMailCredentials()) {
+    const inv = await teamInvites.sendInvites({
+      listWorkshops: db.listWorkshops,
+      markInvited: db.markInvited,
+      // Recipients live in the database so the team can edit them at
+      // /schedule; the env var is only a seed for a fresh install.
+      emails: teamInvites.parseRecipients(
+        await db.getSetting("team_invite_emails", process.env.TEAM_INVITE_EMAILS || "")
+      ),
+      notify: sendSlackMessage,
+    });
+    if (inv.status !== "in-sync") console.log(`[invites] ${inv.status}: ${inv.detail}`);
   }
 
   const state = await webinarSync.reconcile({
