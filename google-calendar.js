@@ -28,6 +28,21 @@ const SCOPES = [
 ];
 
 const TITLE = "The Big Three Mastery Workshop";
+
+/**
+ * Deterministic event id, so creating the same workshop twice is impossible.
+ *
+ * Google lets the caller supply an id and returns 409 if it already exists,
+ * which turns "create" into an idempotent operation. Without it, two sync
+ * passes overlapping — the 60s tick and a route-triggered run, say — both read
+ * google_event_id as null and both insert, and the calendar ends up with two
+ * of everything. That is exactly what happened.
+ *
+ * Ids must be base32hex: digits and a-v only, so no "w", "x", "y" or "z".
+ */
+export function eventIdFor(workshopId) {
+  return `sofevt${workshopId}`;
+}
 const DURATION_MIN = 120;
 const HORIZON_DAYS = 90;
 
@@ -173,6 +188,7 @@ export async function syncEvents({ listWorkshops, setEventId, refreshToken, cale
         continue;
       }
 
+      const wanted = eventIdFor(w.id);
       const body = eventFor(w, attendees);
       const url = hasEvent
         ? `${API}/calendars/${cal}/events/${w.google_event_id}?sendUpdates=all`
@@ -180,8 +196,16 @@ export async function syncEvents({ listWorkshops, setEventId, refreshToken, cale
       const res = await fetch(url, {
         method: hasEvent ? "PATCH" : "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(hasEvent ? body : { ...body, id: wanted }),
       });
+
+      // 409 means this workshop's event already exists — another pass won the
+      // race, or it is left over from before. Adopt it instead of inserting.
+      if (!hasEvent && res.status === 409) {
+        await setEventId(w.id, wanted);
+        changed.push({ id: w.id, action: "adopted existing event" });
+        continue;
+      }
 
       // A 404 on PATCH means the event was deleted in the calendar UI. Drop the
       // stale id so the next pass recreates it rather than failing forever.
@@ -194,7 +218,7 @@ export async function syncEvents({ listWorkshops, setEventId, refreshToken, cale
 
       const created = await res.json();
       if (!hasEvent) {
-        await setEventId(w.id, created.id);
+        await setEventId(w.id, created.id || wanted);
         changed.push({ id: w.id, action: "created", when: `${w.local_date} ${w.local_time}` });
       }
     } catch (err) {

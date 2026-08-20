@@ -1406,7 +1406,17 @@ try {
 // comparisons plus one GHL read, and it only writes when something differs —
 // in practice once or twice a week, when a webinar rolls over.
 const WEBINAR_SYNC_MS = 60_000;
-async function runWebinarSync() {
+// Only one pass at a time. Routes fire this alongside the 60s timer, and two
+// overlapping passes each saw "no calendar event yet" and each created one —
+// which is how the calendar ended up with duplicates.
+let syncInFlight = null;
+function runWebinarSync() {
+  if (syncInFlight) return syncInFlight;
+  syncInFlight = doWebinarSync().finally(() => { syncInFlight = null; });
+  return syncInFlight;
+}
+
+async function doWebinarSync() {
   // Rooms first: creating one is what un-gates the publish below, so a new
   // workshop can go from "just added" to "live in GHL" in a single pass.
   // Room times track the schedule whenever credentials exist — a room at the
