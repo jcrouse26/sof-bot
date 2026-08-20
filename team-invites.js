@@ -93,6 +93,20 @@ function esc(t) {
   return String(t ?? "").replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
 }
 
+/** Fold at 75 octets with a leading space on continuations, per RFC 5545.
+ *  A 146-octet DESCRIPTION is not something every calendar client forgives. */
+function fold(line) {
+  if (Buffer.byteLength(line) <= 75) return line;
+  const out = [];
+  let cur = "";
+  for (const ch of line) {
+    if (Buffer.byteLength(cur + ch) > 74) { out.push(cur); cur = " "; }
+    cur += ch;
+  }
+  out.push(cur);
+  return out.join("\r\n");
+}
+
 export function buildInvite(workshop, { method = "REQUEST", sequence = 0, organizer, to = [] } = {}) {
   const start = new Date(workshop.starts_at);
   const end = new Date(start.getTime() + DURATION_MIN * 60_000);
@@ -115,11 +129,11 @@ export function buildInvite(workshop, { method = "REQUEST", sequence = 0, organi
     `DTSTART:${stamp(start)}`,
     `DTEND:${stamp(end)}`,
     `SEQUENCE:${sequence}`,
-    `SUMMARY:${esc(summary)}`,
-    `DESCRIPTION:${esc(description)}`,
-    workshop.zoom_link ? `LOCATION:${esc(workshop.zoom_link)}` : null,
+    fold(`SUMMARY:${esc(summary)}`),
+    fold(`DESCRIPTION:${esc(description)}`),
+    workshop.zoom_link ? fold(`LOCATION:${esc(workshop.zoom_link)}`) : null,
     `ORGANIZER;CN=Jason Crouse:mailto:${organizer}`,
-    ...to.map((e) => `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${e}`),
+    ...to.map((e) => fold(`ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${e}`)),
     `STATUS:${method === "CANCEL" ? "CANCELLED" : "CONFIRMED"}`,
     "TRANSP:OPAQUE",
     "BEGIN:VALARM",
@@ -132,29 +146,85 @@ export function buildInvite(workshop, { method = "REQUEST", sequence = 0, organi
   ].filter(Boolean).join("\r\n");
 }
 
-function buildMime({ from, to, subject, text, ics, method }) {
-  const boundary = `sof_${Math.abs(hashCode(subject + to.join()))}`;
+/**
+ * RFC 2047 encoding for header values.
+ *
+ * Mail headers are ASCII. An em dash in a Subject goes out as raw UTF-8 bytes
+ * and arrives as "Ã¢Â€Â”" — which is exactly what the first batch of invites
+ * looked like in Gmail.
+ */
+export function encodeHeader(value) {
+  if (!/[^\x00-\x7F]/.test(value)) return value;
+
+  // One encoded-word per ~45 bytes of input, so each stays inside the 75-char
+  // limit RFC 2047 sets. Split by code point, never by byte: chopping a
+  // multi-byte character in half produces a header that decodes to garbage,
+  // which is the failure this whole function exists to prevent.
+  const words = [];
+  let chunk = "";
+  for (const ch of value) {
+    if (Buffer.byteLength(chunk + ch) > 45) {
+      words.push("=?UTF-8?B?" + Buffer.from(chunk, "utf8").toString("base64") + "?=");
+      chunk = "";
+    }
+    chunk += ch;
+  }
+  if (chunk) words.push("=?UTF-8?B?" + Buffer.from(chunk, "utf8").toString("base64") + "?=");
+
+  // Continuation lines start with whitespace; decoders join adjacent
+  // encoded-words without inserting a space.
+  return words.join("\r\n ");
+}
+
+export function buildMime({ from, to, subject, text, html, ics, method }) {
+  const seed = Math.abs(hashCode(subject + to.join()));
+  const outer = `sof_mixed_${seed}`;
+  const inner = `sof_alt_${seed}`;
+  const icsB64 = Buffer.from(ics, "utf8").toString("base64").replace(/(.{76})/g, "$1\r\n");
+
+  // multipart/mixed wrapping multipart/alternative, with the calendar present
+  // both as an alternative body part and as a real attachment. The first
+  // version sent only text/plain + text/calendar and Gmail rendered it as a
+  // plain email with no RSVP card; this mirrors what Google's own invitations
+  // look like on the wire.
   return [
     `From: Jason Crouse <${from}>`,
     `To: ${to.join(", ")}`,
-    `Subject: ${subject}`,
+    `Subject: ${encodeHeader(subject)}`,
     "MIME-Version: 1.0",
-    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    `Content-Type: multipart/mixed; boundary="${outer}"`,
     "",
-    `--${boundary}`,
+    `--${outer}`,
+    `Content-Type: multipart/alternative; boundary="${inner}"`,
+    "",
+    `--${inner}`,
     "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
     "",
     text,
     "",
-    `--${boundary}`,
-    // method= on the part is what makes Gmail render this as an invitation
-    // with RSVP buttons rather than an attachment to download.
-    `Content-Type: text/calendar; charset=UTF-8; method=${method}`,
-    "Content-Transfer-Encoding: 7bit",
+    `--${inner}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    html,
+    "",
+    `--${inner}`,
+    `Content-Type: text/calendar; charset=UTF-8; method=${method}; component=VEVENT`,
+    "Content-Transfer-Encoding: 8bit",
     "",
     ics,
     "",
-    `--${boundary}--`,
+    `--${inner}--`,
+    "",
+    `--${outer}`,
+    `Content-Type: application/ics; name="invite.ics"`,
+    "Content-Transfer-Encoding: base64",
+    `Content-Disposition: attachment; filename="invite.ics"`,
+    "",
+    icsB64,
+    "",
+    `--${outer}--`,
     "",
   ].join("\r\n");
 }
@@ -165,6 +235,13 @@ function hashCode(s) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return h;
+}
+
+/** The HTML part is assembled by hand, so anything interpolated into it has
+ *  to be escaped — a Zoom URL carries & and = and a note can carry anything. */
+function escHtml(t) {
+  return String(t ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 function prettyWhen(startsAt) {
@@ -219,11 +296,25 @@ export async function sendInvites({ listWorkshops, markInvited, emails = [], not
       const subject = cancelling
         ? `Cancelled: ${TITLE} ${label} — ${when}`
         : `${isUpdate ? "Updated: " : ""}${TITLE} ${label} — ${when}`;
+      const scheduleUrl = "https://sof-bot-production.up.railway.app/schedule";
       const text = cancelling
         ? `This workshop has been taken off the schedule.\n\n${when}`
-        : `${when}\n\n${w.zoom_link ? `Zoom: ${w.zoom_link}\n\n` : "Zoom room not set yet.\n\n"}Schedule: https://sof-bot-production.up.railway.app/schedule`;
+        : [
+            when,
+            "",
+            w.zoom_link ? `Zoom: ${w.zoom_link}` : "Zoom room not set yet.",
+            "",
+            `Schedule: ${scheduleUrl}`,
+          ].join("\n");
+      const html = cancelling
+        ? `<p>This workshop has been taken off the schedule.</p><p><strong>${escHtml(when)}</strong></p>`
+        : `<p><strong>${escHtml(when)}</strong></p>` +
+          (w.zoom_link
+            ? `<p>Zoom: <a href="${escHtml(w.zoom_link)}">Join the workshop</a></p>`
+            : `<p>Zoom room not set yet.</p>`) +
+          `<p style="color:#666;font-size:13px">Full schedule: <a href="${scheduleUrl}">${scheduleUrl}</a></p>`;
 
-      await sendRaw(buildMime({ from, to, subject, text, ics, method }));
+      await sendRaw(buildMime({ from, to, subject, text, html, ics, method }));
       await markInvited(w.id, sequence);
       sent.push({ id: w.id, method, sequence, when });
     } catch (err) {
