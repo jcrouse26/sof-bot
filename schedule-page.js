@@ -60,6 +60,15 @@ button.danger.armed{background:var(--red);color:#fff;border-color:var(--red)}
 .toggle{background:none;border:none;color:var(--text-dim);font-size:12px;font-family:'DM Mono',monospace;padding:8px 0}
 .toggle:hover{color:var(--gold)}
 .empty{color:var(--text-dim);font-size:13px;padding:18px 10px;text-align:center}
+.team-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.team-title{font-size:13px;font-weight:500}
+.chips{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:9px;min-height:46px;cursor:text}
+.chips:focus-within{border-color:var(--gold-dim)}
+.chip{display:inline-flex;align-items:center;gap:6px;background:rgba(201,168,76,.1);border:1px solid rgba(201,168,76,.28);color:var(--gold);border-radius:20px;padding:3px 5px 3px 11px;font-size:13px;font-family:'DM Mono',monospace}
+.chip button{background:none;border:none;color:var(--gold-dim);padding:0 5px;font-size:15px;line-height:1;border-radius:20px}
+.chip button:hover{color:var(--red);border:none}
+.chips input{flex:1;min-width:190px;background:none;border:none;outline:none;color:var(--text);font-size:13px;padding:4px 2px}
+.team-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;flex-wrap:wrap}
 `;
 
 /** Server-side attribute escaping — the name is echoed back into the form. */
@@ -156,15 +165,18 @@ export function adminPage({ name = "" } = {}) {
       </div>
     </div>
     <div class="card" id="team-card" style="margin-top:14px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <div class="team-head">
         <div>
-          <div style="font-size:13px;font-weight:500">Team calendar invites</div>
-          <div class="note" id="team-hint">Everyone listed gets a calendar invite for each workshop, and an update whenever one moves.</div>
+          <div class="team-title">Team calendar invites</div>
+          <div class="note" id="team-hint">Everyone here gets a calendar invite for each workshop, and an update whenever one moves.</div>
         </div>
-        <button class="icon" onclick="saveTeam()" id="team-save" style="color:var(--gold)">save</button>
+        <span class="badge" id="team-count">—</span>
       </div>
-      <input type="text" id="team-emails" placeholder="alvaro@saintsofflow.com, jason@saintsofflow.com"/>
-      <div class="note" style="margin-top:8px;font-size:12px">Saving re-sends invites to everyone so a new teammate gets the full schedule. Existing invites update in place rather than duplicating.</div>
+      <div class="chips" id="team-chips" onclick="focusTeamInput(event)"></div>
+      <div class="team-foot">
+        <div class="note" id="team-dirty" style="font-size:12px"></div>
+        <button class="primary" id="team-save" onclick="saveTeam()" disabled>Save changes</button>
+      </div>
     </div>
 
     <div id="feed-row" style="display:none;align-items:center;gap:10px;margin:14px 0 4px">
@@ -280,37 +292,116 @@ function copyFeed() {
   navigator.clipboard.writeText(el.value).then(() => flash("Calendar URL copied. In Google Calendar: Other calendars → From URL.", true));
 }
 
+var teamEmails = [];
+var teamSaved = [];
+
+function teamDirty() { return teamEmails.join(",") !== teamSaved.join(","); }
+
+function validEmail(e) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e); }
+
+function focusTeamInput(ev) {
+  if (ev && ev.target && ev.target.tagName === "BUTTON") return;
+  var i = document.getElementById("team-input");
+  if (i) i.focus();
+}
+
+function renderTeam(keepFocus) {
+  var box = document.getElementById("team-chips");
+  var html = "";
+  for (var i = 0; i < teamEmails.length; i++) {
+    html += '<span class="chip">' + esc(teamEmails[i]) +
+            '<button type="button" title="Remove" onclick="removeTeamEmail(' + i + ')">&times;</button></span>';
+  }
+  html += '<input type="text" id="team-input" autocomplete="off" spellcheck="false" placeholder="' +
+          (teamEmails.length ? "add another…" : "name@saintsofflow.com") + '"/>';
+  box.innerHTML = html;
+
+  var input = document.getElementById("team-input");
+  input.onkeydown = teamKey;
+  input.onblur = function () { commitTeamInput(true); };
+  if (keepFocus) input.focus();
+
+  var n = teamEmails.length;
+  document.getElementById("team-count").textContent = n + (n === 1 ? " recipient" : " recipients");
+
+  var dirty = teamDirty();
+  document.getElementById("team-save").disabled = !dirty;
+  document.getElementById("team-dirty").textContent = dirty
+    ? "Unsaved. Saving re-sends invites so everyone has the current schedule."
+    : (n ? "" : "No one is being invited.");
+}
+
+function teamKey(ev) {
+  if (ev.key === "Enter" || ev.key === "," || ev.key === " " || ev.key === "Tab") {
+    if (ev.key !== "Tab" || ev.target.value.trim()) ev.preventDefault();
+    commitTeamInput(false);
+  } else if (ev.key === "Backspace" && !ev.target.value && teamEmails.length) {
+    // Backspace on an empty box removes the last chip, as tag inputs do.
+    teamEmails.pop();
+    renderTeam(true);
+  }
+}
+
+/** quiet=true when triggered by blur, so tabbing away doesn't scold you. */
+function commitTeamInput(quiet) {
+  var input = document.getElementById("team-input");
+  if (!input) return;
+  var raw = input.value.trim();
+  if (!raw) return;
+  var parts = raw.split(/[,;\s]+/).filter(Boolean);
+  var bad = [];
+  var addedAny = false;
+  for (var i = 0; i < parts.length; i++) {
+    var e = parts[i].toLowerCase();
+    if (!validEmail(e)) { bad.push(parts[i]); continue; }
+    if (teamEmails.indexOf(e) === -1) { teamEmails.push(e); addedAny = true; }
+  }
+  input.value = bad.join(" ");
+  if (bad.length && !quiet) flash("Not an email address: " + bad.join(", "), false);
+  if (addedAny || bad.length === 0) renderTeam(true);
+}
+
+function removeTeamEmail(i) {
+  teamEmails.splice(i, 1);
+  renderTeam(true);
+}
+
 async function loadTeam() {
   try {
     const r = await fetch("/api/team-emails");
     if (!r.ok) return;
     const d = await r.json();
-    document.getElementById("team-emails").value = (d.emails || []).join(", ");
+    teamEmails = (d.emails || []).slice();
+    teamSaved = teamEmails.slice();
+    renderTeam(false);
     if (!d.mailReady) {
       document.getElementById("team-hint").innerHTML =
-        '<span style="color:var(--red)">Gmail credentials not set on this service — invites cannot send yet.</span>';
+        '<span style="color:var(--red)">Gmail credentials are not set on this service, so invites cannot send yet.</span>';
       document.getElementById("team-save").disabled = true;
     }
   } catch (e) { /* the schedule still works without this */ }
 }
 
 async function saveTeam() {
+  commitTeamInput(true);
   const btn = document.getElementById("team-save");
   btn.disabled = true;
   try {
     const res = await fetch("/api/team-emails", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ emails: document.getElementById("team-emails").value }),
+      body: JSON.stringify({ emails: teamEmails.join(", ") }),
     });
     const body = await res.json();
-    if (!res.ok) return flash(body.error || "Could not save.", false);
-    document.getElementById("team-emails").value = (body.emails || []).join(", ");
-    flash(body.emails.length
-      ? "Saved " + body.emails.length + " recipient" + (body.emails.length === 1 ? "" : "s") + ". Invites sending now."
+    if (!res.ok) { flash(body.error || "Could not save.", false); return; }
+    teamEmails = (body.emails || []).slice();
+    teamSaved = teamEmails.slice();
+    renderTeam(false);
+    flash(teamEmails.length
+      ? "Saved. Sending invites to " + teamEmails.length + (teamEmails.length === 1 ? " person." : " people.")
       : "Cleared — no invites will be sent.", true);
   } finally {
-    btn.disabled = false;
+    renderTeam(false);
   }
 }
 
