@@ -866,7 +866,11 @@ app.post("/schedule/logout", (req, res) => {
 app.get("/api/schedule", auth.requireAuth, async (req, res) => {
   try {
     const workshops = await db.listWorkshops();
-    res.json({ workshops, meta: scheduleStore.getMeta() });
+    // Handed out only behind auth: the key in this URL is what protects the
+    // feed, since Google fetches it without any credentials of its own.
+    const key = auth.feedKey();
+    const feedUrl = key ? `${req.protocol}://${req.get("host")}/workshops.ics?key=${key}` : null;
+    res.json({ workshops, meta: scheduleStore.getMeta(), feedUrl });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

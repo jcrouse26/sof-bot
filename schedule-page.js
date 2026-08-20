@@ -155,6 +155,11 @@ export function adminPage({ name = "" } = {}) {
         No upcoming workshops. The bot will fall back to “next Saturday at 9am PT”.
       </div>
     </div>
+    <div id="feed-row" style="display:none;align-items:center;gap:10px;margin:14px 0 4px">
+      <span class="note" style="white-space:nowrap">Subscribe in Google Calendar →</span>
+      <input type="text" id="feed-url" readonly onclick="this.select()" style="flex:1;font-size:12px"/>
+      <button class="icon" onclick="copyFeed()">copy</button>
+    </div>
     <button class="toggle" onclick="togglePast()" id="past-toggle">▸ show past dates</button>
     <div class="card" id="past-card" style="display:none">
       <table><thead><tr>
@@ -258,11 +263,22 @@ function tpl(r, isPast) {
     </td></tr>\`;
 }
 
+function copyFeed() {
+  const el = document.getElementById("feed-url");
+  el.select();
+  navigator.clipboard.writeText(el.value).then(() => flash("Calendar URL copied. In Google Calendar: Other calendars → From URL.", true));
+}
+
 async function load() {
   const res = await fetch("/api/schedule");
   if (res.status === 401) { location.reload(); return; }
   const data = await res.json();
   rows = data.workshops || [];
+  if (data.feedUrl) {
+    const el = document.getElementById("feed-url");
+    el.value = data.feedUrl;
+    document.getElementById("feed-row").style.display = "flex";
+  }
   const badge = document.getElementById("source");
   badge.textContent = data.meta.source === "database" ? "live · database" : data.meta.source;
   badge.className = "badge" + (data.meta.source === "database" ? "" : " warn");
