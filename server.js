@@ -74,6 +74,31 @@ function getWorkshopDate() {
   return nextSaturdayAt9amPT();
 }
 
+// ─── Workshop time labels ────────────────────────────────────────────────────
+// Every workshop time in the prompt is derived from the scheduled instant.
+// These were hardcoded to 9am, which held until the schedule started carrying
+// 3pm and 4pm sessions — at which point the bot told registrants the wrong
+// hour with complete confidence.
+
+function clockIn(date, tz) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true,
+  }).formatToParts(date);
+  const get = (t) => parts.find((x) => x.type === t)?.value ?? "";
+  const period = get("dayPeriod").toLowerCase().replace(/[\s.]/g, "");
+  const minute = get("minute");
+  return minute === "00" ? `${get("hour")}${period}` : `${get("hour")}:${minute}${period}`;
+}
+
+/** "3pm" — Pacific, the house default for talking about times. */
+function ptLabel(date) { return clockIn(date, "America/Los_Angeles"); }
+
+/** "3pm PT (4pm MT / 5pm CT / 6pm ET)" */
+function allZonesLabel(date) {
+  return `${ptLabel(date)} PT (${clockIn(date, "America/Denver")} MT / ` +
+         `${clockIn(date, "America/Chicago")} CT / ${clockIn(date, "America/New_York")} ET)`;
+}
+
 // ─── System prompt ───────────────────────────────────────────────────────────
 
 
