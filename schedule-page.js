@@ -11,64 +11,99 @@
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#0f0e0c;--surface:#1a1916;--surface2:#221f1b;--border:#2a2825;--gold:#c9a84c;--gold-dim:#7a6330;--text:#e8e4dc;--text-dim:#7a7670;--red:#e05555;--green:#5bbd77;--radius:14px}
+/* Saints of Flow tokens, lifted from tfc-platform/styles/colors.css. That file
+   is explicit that the base stays warm and light — never dark, never stark
+   white — which this page previously ignored. */
+:root{
+  --cream-100:#FBF6EC;--cream-200:#F6EFE0;--cream-300:#F0E6D2;--cream-400:#E7D9BC;
+  --sand-500:#C9B48C;--umber-600:#8C7A5C;--umber-700:#6B5A42;--ink-800:#3A2E22;
+  --moss-500:#6B7A44;--moss-600:#57603A;--moss-100:#E7ECD9;
+  --clay-500:#B65B3A;--clay-600:#9A4A2D;--clay-100:#F3DDCF;
+  --gold-500:#C99A3E;--gold-100:#F2E3BE;
+  --bg:var(--cream-100);--surface:var(--cream-200);--surface2:var(--cream-300);
+  --border:var(--cream-400);--text:var(--ink-800);--text-dim:var(--umber-600);
+  --gold:var(--gold-500);--gold-dim:var(--sand-500);--red:var(--clay-600);--green:var(--moss-500);
+  --radius:14px}
 body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:0 0 80px}
-.wrap{width:100%;max-width:900px;margin:0 auto;padding:0 24px}
+.wrap{width:100%;max-width:980px;margin:0 auto;padding:0 24px}
 .header{padding:28px 0 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
 .header-left{display:flex;align-items:center;gap:12px}
-.avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--gold),#8a6020);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;color:#0f0e0c}
+.avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--clay-500),var(--gold-500));display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;color:var(--cream-100)}
 h1{font-size:17px;font-weight:600}
 .sub{font-size:12px;color:var(--text-dim);margin-top:2px}
-.badge{font-size:11px;font-family:'DM Mono',monospace;color:var(--gold);background:rgba(201,168,76,.1);border:1px solid rgba(201,168,76,.2);padding:3px 10px;border-radius:20px}
-.badge.warn{color:var(--red);background:rgba(224,85,85,.1);border-color:rgba(224,85,85,.25)}
+.badge{font-size:11px;font-family:'DM Mono',monospace;color:var(--moss-600);background:var(--moss-100);border:1px solid rgba(107,122,68,.25);padding:3px 10px;border-radius:20px}
+.badge.warn{color:var(--clay-600);background:var(--clay-100);border-color:rgba(182,91,58,.3)}
 section{margin-top:28px}
 h2{font-size:12px;font-family:'DM Mono',monospace;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px}
 .live{display:flex;gap:28px;flex-wrap:wrap}
 .live div{min-width:150px}
 .live .k{font-size:11px;font-family:'DM Mono',monospace;color:var(--text-dim);margin-bottom:4px}
-.live .v{font-size:15px;font-weight:500;color:var(--gold)}
+.live .v{font-size:15px;font-weight:500;color:var(--clay-600)}
 table{width:100%;border-collapse:collapse}
 th{text-align:left;font-size:11px;font-family:'DM Mono',monospace;color:var(--text-dim);font-weight:400;padding:0 10px 10px;text-transform:uppercase;letter-spacing:.06em}
 td{padding:11px 10px;border-top:1px solid var(--border);font-size:14px;vertical-align:middle}
-tr.past td{opacity:.42}
+tr.past td{opacity:.5}
 .day{font-weight:500}
 .note{color:var(--text-dim);font-size:13px}
-.time{font-family:'DM Mono',monospace;font-size:13px;color:var(--gold)}
-.exception{color:var(--gold);font-size:11px;font-family:'DM Mono',monospace;border:1px solid rgba(201,168,76,.25);border-radius:10px;padding:1px 7px;margin-left:8px}
+.time{font-family:'DM Mono',monospace;font-size:13px;color:var(--clay-600)}
+.exception{color:var(--umber-700);font-size:11px;font-family:'DM Mono',monospace;border:1px solid var(--sand-500);border-radius:10px;padding:1px 7px;margin-left:8px}
 input,button{font-family:inherit;font-size:14px}
-input[type=date],input[type=time],input[type=text],input[type=password]{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:9px 11px;border-radius:9px;outline:none}
-input:focus{border-color:var(--gold-dim)}
+input[type=date],input[type=time],input[type=text],input[type=password]{background:var(--cream-100);border:1px solid var(--sand-500);color:var(--text);padding:9px 11px;border-radius:9px;outline:none}
+input:focus{border-color:var(--moss-500);box-shadow:0 0 0 3px rgba(107,122,68,.15)}
 input[type=text]{width:100%}
-button{cursor:pointer;border-radius:9px;padding:9px 16px;font-weight:500;border:1px solid var(--border);background:var(--surface2);color:var(--text);transition:.12s}
-button:hover{border-color:var(--gold-dim)}
-button.primary{background:var(--gold);color:#0f0e0c;border-color:var(--gold);font-weight:600}
-button.primary:hover{filter:brightness(1.08)}
-button.icon{padding:6px 11px;font-size:12px;font-family:'DM Mono',monospace;color:var(--text-dim)}
-button.icon:hover{color:var(--text)}
-button.danger{color:var(--red);border-color:rgba(224,85,85,.3)}
-button.danger.armed{background:var(--red);color:#fff;border-color:var(--red)}
+button{cursor:pointer;border-radius:9px;padding:9px 16px;font-weight:500;border:1px solid var(--sand-500);background:var(--cream-100);color:var(--text);transition:.12s}
+button:hover{border-color:var(--umber-700)}
+button:disabled{opacity:.45;cursor:default}
+button.primary{background:var(--clay-500);color:var(--cream-100);border-color:var(--clay-500);font-weight:600}
+button.primary:hover:not(:disabled){background:var(--clay-600);border-color:var(--clay-600)}
+button.icon{padding:6px 11px;font-size:12px;font-family:'DM Mono',monospace;color:var(--text-dim);background:none;border-color:transparent}
+button.icon:hover{color:var(--text);border-color:var(--sand-500)}
+button.danger{color:var(--clay-600);border-color:rgba(182,91,58,.35)}
+button.danger.armed{background:var(--clay-600);color:var(--cream-100);border-color:var(--clay-600)}
 .addrow{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
 .field{display:flex;flex-direction:column;gap:6px}
 .field label{font-size:11px;font-family:'DM Mono',monospace;color:var(--text-dim)}
 .field.grow{flex:1;min-width:180px}
 .msg{margin-top:12px;font-size:13px;padding:9px 13px;border-radius:9px;display:none}
-.msg.ok{display:block;background:rgba(91,189,119,.1);border:1px solid rgba(91,189,119,.25);color:var(--green)}
-.msg.err{display:block;background:rgba(224,85,85,.1);border:1px solid rgba(224,85,85,.25);color:var(--red)}
+.msg.ok{display:block;background:var(--moss-100);border:1px solid rgba(107,122,68,.3);color:var(--moss-600)}
+.msg.err{display:block;background:var(--clay-100);border:1px solid rgba(182,91,58,.3);color:var(--clay-600)}
 .foot{margin-top:22px;font-size:12px;color:var(--text-dim);line-height:1.7}
-.foot code{font-family:'DM Mono',monospace;color:var(--gold-dim)}
+.foot code{font-family:'DM Mono',monospace;color:var(--umber-700)}
 .toggle{background:none;border:none;color:var(--text-dim);font-size:12px;font-family:'DM Mono',monospace;padding:8px 0}
-.toggle:hover{color:var(--gold)}
+.toggle:hover{color:var(--clay-600)}
 .empty{color:var(--text-dim);font-size:13px;padding:18px 10px;text-align:center}
 .team-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
 .team-title{font-size:13px;font-weight:500}
-.chips{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:9px;min-height:46px;cursor:text}
-.chips:focus-within{border-color:var(--gold-dim)}
-.chip{display:inline-flex;align-items:center;gap:6px;background:rgba(201,168,76,.1);border:1px solid rgba(201,168,76,.28);color:var(--gold);border-radius:20px;padding:3px 5px 3px 11px;font-size:13px;font-family:'DM Mono',monospace}
-.chip button{background:none;border:none;color:var(--gold-dim);padding:0 5px;font-size:15px;line-height:1;border-radius:20px}
-.chip button:hover{color:var(--red);border:none}
-.chips input{flex:1;min-width:190px;background:none;border:none;outline:none;color:var(--text);font-size:13px;padding:4px 2px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--cream-100);border:1px solid var(--sand-500);border-radius:9px;padding:9px;min-height:46px;cursor:text}
+.chips:focus-within{border-color:var(--moss-500);box-shadow:0 0 0 3px rgba(107,122,68,.15)}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--gold-100);border:1px solid rgba(201,154,62,.4);color:var(--umber-700);border-radius:20px;padding:3px 5px 3px 11px;font-size:13px;font-family:'DM Mono',monospace}
+.chip button{background:none;border:none;color:var(--umber-600);padding:0 5px;font-size:15px;line-height:1;border-radius:20px}
+.chip button:hover{color:var(--clay-600);border:none}
+.chips input{flex:1;min-width:190px;background:none;border:none;outline:none;color:var(--text);font-size:13px;padding:4px 2px;box-shadow:none}
+.chips input:focus{box-shadow:none}
 .team-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;flex-wrap:wrap}
+/* ---- calendar ---- */
+.viewbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.views{display:inline-flex;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:3px;gap:2px}
+.views button{background:none;border:none;padding:6px 14px;border-radius:8px;font-size:12px;font-family:'DM Mono',monospace;color:var(--text-dim)}
+.views button.on{background:var(--cream-100);color:var(--ink-800);border:1px solid var(--sand-500)}
+.calnav{display:flex;align-items:center;gap:8px}
+.calnav .label{font-size:14px;font-weight:600;min-width:170px;text-align:center}
+.calgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.calhead{background:var(--surface2);padding:8px 6px;text-align:center;font-size:11px;font-family:'DM Mono',monospace;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em}
+.calcell{background:var(--surface);min-height:104px;padding:6px 6px 8px;display:flex;flex-direction:column;gap:4px}
+.calcell.dim{background:var(--cream-300);opacity:.55}
+.calcell.today{background:var(--gold-100)}
+.caldate{font-size:12px;font-family:'DM Mono',monospace;color:var(--text-dim)}
+.calcell.today .caldate{color:var(--clay-600);font-weight:600}
+.calev{text-align:left;width:100%;border:1px solid rgba(107,122,68,.35);background:var(--moss-100);color:var(--moss-600);border-radius:7px;padding:4px 7px;font-size:11px;font-family:'DM Mono',monospace;line-height:1.35;cursor:pointer}
+.calev:hover{border-color:var(--moss-500)}
+.calev.noroom{background:var(--clay-100);border-color:rgba(182,91,58,.35);color:var(--clay-600)}
+.calev.off{background:var(--cream-300);border-color:var(--sand-500);color:var(--text-dim);text-decoration:line-through}
+.calev b{font-weight:600}
+.calweek .calcell{min-height:220px}
+@media(max-width:720px){.calcell{min-height:78px}.calweek .calcell{min-height:120px}}
 `;
 
 /** Server-side attribute escaping — the name is echoed back into the form. */
@@ -154,7 +189,31 @@ export function adminPage({ name = "" } = {}) {
   </section>
 
   <section>
-    <h2>Upcoming</h2>
+    <div class="viewbar">
+      <h2 style="margin:0">Schedule</h2>
+      <div class="views">
+        <button id="v-list" class="on" onclick="setView('list')">List</button>
+        <button id="v-month" onclick="setView('month')">Month</button>
+        <button id="v-week" onclick="setView('week')">Week</button>
+      </div>
+    </div>
+    <div id="cal-wrap" style="display:none">
+      <div class="card" style="padding:14px 16px 16px">
+        <div class="viewbar" style="margin-bottom:14px">
+          <div class="calnav">
+            <button class="icon" onclick="calStep(-1)">&lsaquo;</button>
+            <span class="label" id="cal-label">—</span>
+            <button class="icon" onclick="calStep(1)">&rsaquo;</button>
+          </div>
+          <button class="icon" onclick="calToday()">Today</button>
+        </div>
+        <div id="cal-grid"></div>
+        <div class="note" style="margin-top:10px;font-size:12px">
+          Click any workshop to edit it. Dates and times are Pacific, matching the schedule.
+        </div>
+      </div>
+    </div>
+    <div id="list-wrap">
     <div class="card">
       <table><thead><tr>
         <th style="width:24%">Date</th><th style="width:10%">Time</th><th style="width:52px">#</th><th style="width:88px">Zoom</th><th>Note</th>
@@ -183,6 +242,7 @@ export function adminPage({ name = "" } = {}) {
       <span class="note" style="white-space:nowrap">Subscribe in Google Calendar →</span>
       <input type="text" id="feed-url" readonly onclick="this.select()" style="flex:1;font-size:12px"/>
       <button class="icon" onclick="copyFeed()">copy</button>
+    </div>
     </div>
     <button class="toggle" onclick="togglePast()" id="past-toggle">▸ show past dates</button>
     <div class="card" id="past-card" style="display:none">
@@ -247,6 +307,102 @@ function editedBy(r) {
   return (who || "unknown") + " · " + ago(r.updated_at);
 }
 
+var calView = "list";
+var calAnchor = new Date();
+
+function setView(v) {
+  calView = v;
+  ["list", "month", "week"].forEach(function (name) {
+    document.getElementById("v-" + name).className = name === v ? "on" : "";
+  });
+  document.getElementById("cal-wrap").style.display = v === "list" ? "none" : "";
+  document.getElementById("list-wrap").style.display = v === "list" ? "" : "none";
+  document.getElementById("past-toggle").style.display = v === "list" ? "" : "none";
+  if (v !== "list") renderCal();
+}
+
+function calStep(dir) {
+  if (calView === "week") calAnchor.setDate(calAnchor.getDate() + 7 * dir);
+  else calAnchor.setMonth(calAnchor.getMonth() + dir);
+  renderCal();
+}
+
+function calToday() { calAnchor = new Date(); renderCal(); }
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+/** Local calendar key. Built from the parts, never from toISOString — the
+ *  schedule stores Pacific wall-clock and a browser in another timezone would
+ *  shift every workshop by a day. */
+function dayKey(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
+
+function prettyClock(hhmm) {
+  var parts = hhmm.split(":");
+  var h = parseInt(parts[0], 10);
+  var m = parts[1];
+  var ap = h >= 12 ? "pm" : "am";
+  var h12 = h % 12 === 0 ? 12 : h % 12;
+  return m === "00" ? h12 + ap : h12 + ":" + m + ap;
+}
+
+function renderCal() {
+  var grid = document.getElementById("cal-grid");
+  var label = document.getElementById("cal-label");
+  var days = [];
+  var todayKey = dayKey(new Date());
+
+  if (calView === "week") {
+    var start = new Date(calAnchor);
+    start.setDate(start.getDate() - start.getDay());
+    for (var i = 0; i < 7; i++) { var d = new Date(start); d.setDate(start.getDate() + i); days.push({ d: d, dim: false }); }
+    var endW = days[6].d;
+    label.textContent = start.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " – " +
+      endW.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  } else {
+    var first = new Date(calAnchor.getFullYear(), calAnchor.getMonth(), 1);
+    var gridStart = new Date(first);
+    gridStart.setDate(1 - first.getDay());
+    for (var j = 0; j < 42; j++) {
+      var dd = new Date(gridStart);
+      dd.setDate(gridStart.getDate() + j);
+      days.push({ d: dd, dim: dd.getMonth() !== calAnchor.getMonth() });
+    }
+    while (days.length > 35 && days.slice(35).every(function (x) { return x.dim; })) days.length = 35;
+    label.textContent = calAnchor.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  }
+
+  var byDay = {};
+  rows.forEach(function (r) { (byDay[r.local_date] = byDay[r.local_date] || []).push(r); });
+
+  var html = "";
+  ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].forEach(function (n) {
+    html += '<div class="calhead">' + n + "</div>";
+  });
+  days.forEach(function (cell) {
+    var key = dayKey(cell.d);
+    var cls = "calcell" + (cell.dim ? " dim" : "") + (key === todayKey ? " today" : "");
+    html += '<div class="' + cls + '"><div class="caldate">' + cell.d.getDate() + "</div>";
+    (byDay[key] || []).sort(function (a, b) { return a.local_time < b.local_time ? -1 : 1; }).forEach(function (r) {
+      var evCls = "calev" + (r.active === false ? " off" : r.zoom_link ? "" : " noroom");
+      var title = r.zoom_link ? "Zoom room ready" : "No Zoom room yet";
+      html += '<button class="' + evCls + '" title="' + esc(title) + '" onclick="openFromCal(' + r.id + ')">' +
+        "<b>" + prettyClock(r.local_time) + "</b>" + (r.edition ? " · v" + r.edition : "") + "</button>";
+    });
+    html += "</div>";
+  });
+
+  grid.className = "calgrid" + (calView === "week" ? " calweek" : "");
+  grid.innerHTML = html;
+}
+
+/** Editing lives in the list, so jump there rather than duplicating the form. */
+function openFromCal(id) {
+  setView("list");
+  var tr = document.querySelector('tr[data-id="' + id + '"]');
+  if (!tr) { togglePast(); tr = document.querySelector('tr[data-id="' + id + '"]'); }
+  if (tr) { tr.scrollIntoView({ behavior: "smooth", block: "center" }); editRow(id); }
+}
+
 function render() {
   const now = Date.now();
   // Same cutover the bot and the GHL values use, sent by the server so this
@@ -259,6 +415,7 @@ function render() {
   document.getElementById("upcoming").innerHTML = up.map(row => tpl(row, false)).join("");
   document.getElementById("past").innerHTML = past.map(row => tpl(row, true)).join("");
   document.getElementById("upcoming-empty").style.display = up.length ? "none" : "block";
+  if (calView !== "list") renderCal();
 }
 
 // The Zoom room is created by hand, and nothing publishes to GHL until it
