@@ -1345,6 +1345,19 @@ const PORT = process.env.PORT || 3000;
 // and answers from workshop-schedule.js.
 await scheduleStore.init();
 
+// Boot self-check: build the prompt once. It touches the schedule, the time
+// helpers and the knowledge base, so a missing function or a bad date shows up
+// here — at deploy, in the logs and in Slack — rather than as silence when a
+// real person texts. A removal once took the time helpers out with it and the
+// bot answered nothing until someone noticed the admin page had gone blank.
+try {
+  await buildSystemPrompt();
+  console.log("[selfcheck] system prompt builds OK");
+} catch (err) {
+  console.error("[selfcheck] SYSTEM PROMPT IS BROKEN —", err.message);
+  sendSlackMessage(`🛑 *SOF Bot cannot build its system prompt* — it will not answer texts.\n\`${err.message}\``).catch(() => {});
+}
+
 // Keep the GHL webinar custom values pointed at the next workshop. Runs on the
 // same 60s cadence as the schedule cache: a reconcile is a couple of in-memory
 // comparisons plus one GHL read, and it only writes when something differs —
