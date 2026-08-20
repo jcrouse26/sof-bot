@@ -137,7 +137,7 @@ export function adminPage({ name = "" } = {}) {
       <div class="addrow">
         <div class="field"><label for="d">DATE</label><input type="date" id="d"/></div>
         <div class="field"><label for="t">TIME (PACIFIC)</label><input type="time" id="t" value="09:00"/></div>
-        <div class="field grow"><label for="n">NOTE (OPTIONAL)</label><input type="text" id="n" placeholder="e.g. exception — moved from Saturday"/></div>
+        <div class="field grow"><label for="n">NOTE (OPTIONAL)</label><input type="text" id="n" placeholder="e.g. moved from Saturday"/></div>
         <button class="primary" onclick="addRow()">Add</button>
       </div>
       <div class="msg" id="msg"></div>
@@ -200,10 +200,6 @@ function flash(text, ok) {
   setTimeout(() => { el.className = "msg"; }, 4000);
 }
 
-function weekday(dateStr) {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString("en-US", { weekday: "long" });
-}
 function prettyDate(dateStr) {
   const [y, m, d] = dateStr.split("-").map(Number);
   return new Date(y, m - 1, d).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
@@ -262,12 +258,11 @@ function zoomCell(r, isPast) {
 }
 
 function tpl(r, isPast) {
-  const offSchedule = weekday(r.local_date) !== "Saturday" || r.local_time !== "09:00";
   // active=false rows exist in the table but are invisible to the bot. Nothing
   // in this UI sets that flag, but say so plainly if something else ever does.
   const hidden = r.active === false;
   return \`<tr class="\${isPast || hidden ? "past" : ""}" data-id="\${r.id}">
-    <td class="day">\${esc(prettyDate(r.local_date))}\${offSchedule ? '<span class="exception">exception</span>' : ""}\${hidden ? '<span class="exception" style="color:var(--red);border-color:rgba(224,85,85,.3)">bot ignores this</span>' : ""}</td>
+    <td class="day">\${esc(prettyDate(r.local_date))}\${hidden ? '<span class="exception" style="color:var(--red);border-color:rgba(224,85,85,.3)">bot ignores this</span>' : ""}</td>
     <td class="time">\${esc(prettyTime(r.local_time))}</td>
     <td class="time" title="\${r.edition ? "tag: the-big-three-webinar-v" + r.edition : "no edition number — tag will not update"}">\${r.edition ? "v" + r.edition : '<span style="color:var(--red)">—</span>'}</td>
     <td>\${zoomCell(r, isPast)}</td>
