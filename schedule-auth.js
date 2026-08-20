@@ -17,6 +17,20 @@ function secret() {
   return process.env.SCHEDULE_SESSION_SECRET || process.env.SCHEDULE_PASSWORD || "";
 }
 
+/**
+ * Stable, unguessable key for the public .ics feed.
+ *
+ * A calendar feed can't carry a cookie — Google fetches it anonymously — so
+ * the URL itself is the credential. Derived from the same secret rather than
+ * stored as another env var, so it survives redeploys and never needs rotating
+ * by hand. Read-only and future-dated: the worst case if it leaks is that
+ * someone learns the workshop schedule, which is publicly advertised anyway.
+ */
+export function feedKey() {
+  if (!secret()) return null;
+  return crypto.createHmac("sha256", secret()).update("ics-feed-v1").digest("hex").slice(0, 32);
+}
+
 export function isConfigured() {
   return Boolean(process.env.SCHEDULE_PASSWORD);
 }

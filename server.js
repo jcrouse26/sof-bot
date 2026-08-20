@@ -6,6 +6,7 @@ import * as auth from "./schedule-auth.js";
 import { loginPage, adminPage } from "./schedule-page.js";
 import * as webinarSync from "./webinar-sync.js";
 import * as zoomWebinars from "./zoom-webinars.js";
+import { buildFeed } from "./workshops-ics.js";
 
 const app = express();
 app.use(express.json());
@@ -965,6 +966,23 @@ app.post("/api/webinar-sync/run", auth.requireAuth, async (req, res) => {
     res.json(state);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Subscribable calendar for Jason and the team. No cookie — Google fetches
+// this anonymously, so the key in the URL is the credential.
+app.get("/workshops.ics", async (req, res) => {
+  const expected = auth.feedKey();
+  if (!expected || req.query.key !== expected) return res.status(404).send("Not found");
+  try {
+    const rows = await db.listWorkshops({ activeOnly: true, includePast: false });
+    res.setHeader("Content-Type", "text/calendar; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Content-Disposition", 'inline; filename="sof-workshops.ics"');
+    res.send(buildFeed(rows));
+  } catch (err) {
+    console.error("[ics] feed failed:", err.message);
+    res.status(500).send("Calendar unavailable");
   }
 });
 
