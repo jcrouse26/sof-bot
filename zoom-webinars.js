@@ -183,3 +183,69 @@ export async function ensureRooms({ listWorkshops, updateWorkshop, notify = asyn
 
   return { status: created.length ? "created" : "in-sync", detail: `${created.length} room(s) created`, created };
 }
+
+/**
+ * Keep each existing room's start time matching the schedule.
+ *
+ * ensureRooms only ever CREATED rooms, so moving a date at /schedule left the
+ * Zoom room behind: GHL and every email said the new time while Zoom told
+ * registrants the old one. Nothing surfaced the disagreement, because both
+ * systems were internally consistent.
+ *
+ * Runs on credentials alone, deliberately NOT behind ZOOM_AUTOCREATE — that
+ * switch governs making new rooms. A room whose time is wrong is wrong whether
+ * or not you want new ones created.
+ *
+ * Zoom emails registrants when a webinar moves, so a correction here reaches
+ * the people who already signed up.
+ */
+export async function syncRoomTimes({ listWorkshops, notify = async () => {} } = {}) {
+  if (!hasCredentials()) return { status: "skipped", detail: "ZOOM_WEBINAR_* not set", moved: [] };
+
+  let rows;
+  try {
+    rows = await listWorkshops({ activeOnly: true });
+  } catch (err) {
+    return { status: "error", detail: `schedule read failed: ${err.message}`, moved: [] };
+  }
+
+  const upcoming = rows.filter((r) => r.zoom_webinar_id && new Date(r.starts_at).getTime() > Date.now());
+  if (!upcoming.length) return { status: "in-sync", detail: "no upcoming rooms", moved: [] };
+
+  const stamp = (d) => new Date(d).toISOString().replace(/\.\d{3}Z$/, "Z");
+  let token;
+  try {
+    token = await getToken();
+  } catch (err) {
+    return { status: "error", detail: err.message, moved: [] };
+  }
+
+  const moved = [];
+  for (const w of upcoming) {
+    try {
+      const res = await fetch(`${ZOOM_API}/webinars/${w.zoom_webinar_id}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) continue;              // deleted in Zoom, or not visible — leave it alone
+      const live = await res.json();
+      const want = stamp(w.starts_at);
+      if (live.start_time && stamp(live.start_time) === want) continue;
+
+      const patch = await fetch(`${ZOOM_API}/webinars/${w.zoom_webinar_id}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ start_time: want, timezone: TZ, duration: DURATION_MIN }),
+      });
+      if (!patch.ok) throw new Error(`HTTP ${patch.status}`);
+
+      const pretty = (iso) => new Date(iso).toLocaleString("en-US", { timeZone: TZ, dateStyle: "medium", timeStyle: "short" });
+      moved.push({ id: w.zoom_webinar_id, from: live.start_time, to: want });
+      await notify(
+        `🕒 *Zoom room moved* to match the schedule\n` +
+        `${pretty(live.start_time)} → ${pretty(want)} PT\nZoom has emailed everyone already registered.`
+      );
+    } catch (err) {
+      await notify(`🛑 *Could not move Zoom room* ${w.zoom_webinar_id}: ${err.message}`);
+      return { status: "error", detail: err.message, moved };
+    }
+  }
+  return { status: moved.length ? "moved" : "in-sync", detail: `${moved.length} room(s) moved`, moved };
+}

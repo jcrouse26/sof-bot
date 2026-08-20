@@ -1235,6 +1235,12 @@ const WEBINAR_SYNC_MS = 60_000;
 async function runWebinarSync() {
   // Rooms first: creating one is what un-gates the publish below, so a new
   // workshop can go from "just added" to "live in GHL" in a single pass.
+  // Room times track the schedule whenever credentials exist — a room at the
+  // wrong hour is wrong regardless of whether new ones are being created.
+  if (zoomWebinars.hasCredentials()) {
+    const t = await zoomWebinars.syncRoomTimes({ listWorkshops: db.listWorkshops, notify: sendSlackMessage });
+    if (t.status !== "in-sync") console.log(`[zoom] times ${t.status}: ${t.detail}`);
+  }
   if (zoomWebinars.isConfigured()) {
     const z = await zoomWebinars.ensureRooms({
       listWorkshops: db.listWorkshops,
