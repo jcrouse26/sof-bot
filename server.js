@@ -869,7 +869,10 @@ app.get("/api/schedule", auth.requireAuth, async (req, res) => {
     // Handed out only behind auth: the key in this URL is what protects the
     // feed, since Google fetches it without any credentials of its own.
     const key = auth.feedKey();
-    const feedUrl = key ? `${req.protocol}://${req.get("host")}/workshops.ics?key=${key}` : null;
+    // Railway terminates TLS upstream, so req.protocol reads "http" — and
+    // Google Calendar refuses to subscribe to a non-HTTPS feed.
+    const proto = req.get("x-forwarded-proto")?.split(",")[0] || req.protocol;
+    const feedUrl = key ? `${proto}://${req.get("host")}/workshops.ics?key=${key}` : null;
     res.json({ workshops, meta: scheduleStore.getMeta(), feedUrl });
   } catch (err) {
     res.status(500).json({ error: err.message });
