@@ -223,6 +223,17 @@ export function adminPage({ name = "" } = {}) {
         No upcoming workshops. The bot will fall back to “next Saturday at 9am PT”.
       </div>
     </div>
+    <div class="card" id="google-card" style="margin-top:14px">
+      <div class="team-head">
+        <div>
+          <div class="team-title">Google Calendar</div>
+          <div class="note" id="google-hint">Checking…</div>
+        </div>
+        <span class="badge" id="google-badge">—</span>
+      </div>
+      <div id="google-body"></div>
+    </div>
+
     <div class="card" id="team-card" style="margin-top:14px">
       <div class="team-head">
         <div>
@@ -523,6 +534,54 @@ function removeTeamEmail(i) {
   renderTeam(true);
 }
 
+function connectGoogle() { location.href = "/google/connect"; }
+
+async function loadGoogle() {
+  var hint = document.getElementById("google-hint");
+  var badge = document.getElementById("google-badge");
+  var body = document.getElementById("google-body");
+  try {
+    var d = await (await fetch("/api/google-status")).json();
+    if (!d.hasClient) {
+      badge.textContent = "unavailable"; badge.className = "badge warn";
+      hint.textContent = "Google OAuth credentials are not set on this service.";
+      body.innerHTML = ""; return;
+    }
+    if (!d.connected) {
+      badge.textContent = "not connected"; badge.className = "badge warn";
+      hint.textContent = "Connect once and every workshop is written straight onto your calendar, including changes.";
+      body.innerHTML = '<button class="primary" onclick="connectGoogle()">Connect Google Calendar</button>';
+      return;
+    }
+    badge.textContent = "connected"; badge.className = "badge";
+    hint.textContent = "Workshops are written to this calendar and updated whenever the schedule changes. The team is added as guests, so Google sends their invitations.";
+    var opts = (d.calendars || []).map(function (c) {
+      return '<option value="' + esc(c.id) + '"' + (c.id === d.calendarId ? " selected" : "") + ">" +
+        esc(c.name) + (c.primary ? " (primary)" : "") + "</option>";
+    }).join("");
+    body.innerHTML = opts
+      ? '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+        '<select id="google-cal" style="flex:1;min-width:220px;padding:9px 11px;border-radius:9px;border:1px solid var(--sand-500);background:var(--cream-100);color:var(--text);font-family:inherit;font-size:14px">' + opts + "</select>" +
+        '<button class="icon" onclick="saveGoogleCal()">Use this calendar</button>' +
+        '<button class="icon" onclick="connectGoogle()">Reconnect</button></div>'
+      : '<div class="note">Connected, but no writable calendars came back. Try reconnecting.</div>';
+  } catch (e) {
+    badge.textContent = "error"; badge.className = "badge warn";
+    hint.textContent = "Could not read Google Calendar status.";
+  }
+}
+
+async function saveGoogleCal() {
+  var id = document.getElementById("google-cal").value;
+  var r = await fetch("/api/google-calendar", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ calendarId: id }),
+  });
+  if (r.ok) flash("Calendar set. Workshops are being written to it now.", true);
+  else flash("Could not change calendar.", false);
+  loadGoogle();
+}
+
 async function loadTeam() {
   try {
     const r = await fetch("/api/team-emails");
@@ -562,6 +621,15 @@ async function saveTeam() {
   }
 }
 
+(function reportGoogleReturn() {
+  var m = location.search.match(/[?&]google=(\w+)/);
+  if (!m) return;
+  history.replaceState({}, "", "/schedule");
+  if (m[1] === "connected") flash("Google Calendar connected. Writing workshops now.", true);
+  else if (m[1] === "denied") flash("Google access was declined.", false);
+  else flash("Google Calendar connection failed — check the logs.", false);
+})();
+
 async function load() {
   const res = await fetch("/api/schedule");
   if (res.status === 401) { location.reload(); return; }
@@ -579,6 +647,7 @@ async function load() {
   render();
   loadLive();
   loadTeam();
+  loadGoogle();
 }
 
 async function loadLive() {

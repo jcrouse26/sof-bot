@@ -8,6 +8,7 @@ import * as webinarSync from "./webinar-sync.js";
 import * as zoomWebinars from "./zoom-webinars.js";
 import { buildFeed } from "./workshops-ics.js";
 import * as teamInvites from "./team-invites.js";
+import * as googleCal from "./google-calendar.js";
 
 const app = express();
 app.use(express.json());
@@ -1042,6 +1043,57 @@ app.get("/workshops.ics", async (req, res) => {
   }
 });
 
+function googleRedirectUri(req) {
+  const proto = req.get("x-forwarded-proto")?.split(",")[0] || req.protocol;
+  return `${proto}://${req.get("host")}/google/callback`;
+}
+
+app.get("/google/connect", auth.requireAuth, (req, res) => {
+  if (!googleCal.hasClient()) return res.status(400).send("GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET are not set.");
+  res.redirect(googleCal.authUrl(googleRedirectUri(req)));
+});
+
+app.get("/google/callback", auth.requireAuth, async (req, res) => {
+  if (req.query.error) return res.redirect("/schedule?google=denied");
+  try {
+    const refresh = await googleCal.exchangeCode(String(req.query.code || ""), googleRedirectUri(req));
+    await db.setSetting("google_refresh_token", refresh, auth.editorName(req));
+    // Default to the primary calendar; the picker can move it afterwards.
+    if (!(await db.getSetting("google_calendar_id"))) await db.setSetting("google_calendar_id", "primary", auth.editorName(req));
+    runWebinarSync().catch(() => {});
+    res.redirect("/schedule?google=connected");
+  } catch (err) {
+    console.error("[google] callback failed:", err.message);
+    res.redirect("/schedule?google=failed");
+  }
+});
+
+app.get("/api/google-status", auth.requireAuth, async (req, res) => {
+  try {
+    const refresh = await db.getSetting("google_refresh_token");
+    const calendarId = await db.getSetting("google_calendar_id", "primary");
+    if (!refresh) return res.json({ connected: false, hasClient: googleCal.hasClient() });
+    let calendars = [];
+    try { calendars = await googleCal.listCalendars(refresh); } catch (e) { /* token may be revoked */ }
+    res.json({ connected: true, hasClient: true, calendarId, calendars });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/google-calendar", auth.requireAuth, async (req, res) => {
+  try {
+    await db.setSetting("google_calendar_id", String(req.body?.calendarId || "primary"), auth.editorName(req));
+    // Events live on the old calendar; clear the ids so they are recreated on
+    // the new one rather than patched somewhere nobody is looking.
+    await db.clearEventIds();
+    runWebinarSync().catch(() => {});
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/team-emails", auth.requireAuth, async (req, res) => {
   try {
     const raw = await db.getSetting("team_invite_emails", process.env.TEAM_INVITE_EMAILS || "");
@@ -1368,15 +1420,30 @@ async function runWebinarSync() {
     if (z.created.length) await scheduleStore.refresh();
   }
 
-  if (teamInvites.hasMailCredentials()) {
+  const googleRefresh = db.isConfigured() ? await db.getSetting("google_refresh_token") : "";
+  const teamEmails = teamInvites.parseRecipients(
+    db.isConfigured() ? await db.getSetting("team_invite_emails", process.env.TEAM_INVITE_EMAILS || "") : ""
+  );
+
+  if (googleRefresh) {
+    // Google emails the attendees its own invitations, so the app must not
+    // also send its own — that would put two of everything in three inboxes.
+    const g = await googleCal.syncEvents({
+      listWorkshops: db.listWorkshops,
+      setEventId: db.setEventId,
+      refreshToken: googleRefresh,
+      calendarId: await db.getSetting("google_calendar_id", "primary"),
+      attendees: teamEmails,
+      notify: sendSlackMessage,
+    });
+    if (g.status !== "in-sync") console.log(`[google] ${g.status}: ${g.detail}`);
+  } else if (teamInvites.hasMailCredentials()) {
     const inv = await teamInvites.sendInvites({
       listWorkshops: db.listWorkshops,
       markInvited: db.markInvited,
       // Recipients live in the database so the team can edit them at
       // /schedule; the env var is only a seed for a fresh install.
-      emails: teamInvites.parseRecipients(
-        await db.getSetting("team_invite_emails", process.env.TEAM_INVITE_EMAILS || "")
-      ),
+      emails: teamEmails,
       notify: sendSlackMessage,
     });
     if (inv.status !== "in-sync") console.log(`[invites] ${inv.status}: ${inv.detail}`);

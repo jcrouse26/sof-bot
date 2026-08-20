@@ -50,6 +50,7 @@ const SELECT_COLUMNS = `
   edition,
   invite_sent_at,
   invite_sequence,
+  google_event_id,
   zoom_link,
   zoom_webinar_id,
   updated_by,
@@ -102,6 +103,13 @@ export async function initSchema() {
       ALTER TABLE workshops
         ADD COLUMN IF NOT EXISTS invite_sent_at TIMESTAMPTZ,
         ADD COLUMN IF NOT EXISTS invite_sequence INTEGER
+    `);
+    // The Google Calendar event this workshop owns. Null means "not on the
+    // calendar yet" — including after someone deletes the event by hand, which
+    // the sync detects and recreates.
+    await client.query(`
+      ALTER TABLE workshops
+        ADD COLUMN IF NOT EXISTS google_event_id TEXT
     `);
     // Small key/value store for things the team edits in the app rather than
     // in Railway — starting with who gets calendar invites. A settings row
@@ -261,6 +269,14 @@ export async function resetUpcomingInvites({ cutoverMinutes = 30 } = {}) {
     [String(cutoverMinutes)]
   );
   return rowCount;
+}
+
+export async function clearEventIds() {
+  await getPool().query(`UPDATE workshops SET google_event_id = NULL WHERE google_event_id IS NOT NULL`);
+}
+
+export async function setEventId(id, eventId) {
+  await getPool().query(`UPDATE workshops SET google_event_id = $2 WHERE id = $1`, [id, eventId]);
 }
 
 export async function markInvited(id, sequence) {
