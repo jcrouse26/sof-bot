@@ -1105,6 +1105,18 @@ app.post("/api/google-calendar/rebuild", auth.requireAuth, async (req, res) => {
   }
 });
 
+// Read one event back as Google holds it — the only evidence available here
+// about whether guests are actually attached.
+app.get("/api/google-calendar/inspect", auth.requireAuth, async (req, res) => {
+  try {
+    const refresh = await db.getSetting("google_refresh_token");
+    const calendarId = await db.getSetting("google_calendar_id", "primary");
+    res.json(await googleCal.inspectNext({ listWorkshops: db.listWorkshops, refreshToken: refresh, calendarId }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.put("/api/google-calendar", auth.requireAuth, async (req, res) => {
   try {
     await db.setSetting("google_calendar_id", String(req.body?.calendarId || "primary"), auth.editorName(req));

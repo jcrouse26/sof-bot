@@ -321,3 +321,26 @@ export async function purgeWorkshopEvents({ listWorkshops, clearEventIds, refres
   await clearEventIds();
   return { status: "purged", detail: `${removed} event(s) removed`, removed };
 }
+
+/** The next upcoming event exactly as Google stores it, for verification. */
+export async function inspectNext({ listWorkshops, refreshToken, calendarId = "primary" }) {
+  if (!hasClient() || !refreshToken) return { error: "not connected" };
+  const rows = (await listWorkshops({ activeOnly: true }))
+    .filter((w) => w.google_event_id && new Date(w.starts_at) > Date.now())
+    .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
+  if (!rows.length) return { error: "no upcoming event with an id" };
+  const w = rows[0];
+  const token = await accessToken(refreshToken);
+  const res = await fetch(`${API}/calendars/${encodeURIComponent(calendarId)}/events/${w.google_event_id}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const ev = await res.json();
+  if (!res.ok) return { error: `${res.status}: ${ev?.error?.message || ""}` };
+  return {
+    when: `${w.local_date} ${w.local_time} PT`,
+    summary: ev.summary,
+    organizer: ev.organizer?.email,
+    attendees: (ev.attendees || []).map((a) => ({ email: a.email, status: a.responseStatus, self: !!a.self })),
+    status: ev.status,
+  };
+}
