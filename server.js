@@ -61,9 +61,9 @@ function getWorkshopDate() {
   // signing up for the next one from the moment this one is under way, and the
   // bot pointing at a workshop already in progress costs a registration.
   //
-  // The session still running is handled separately by getLiveWorkshop() — see
-  // buildSystemPrompt — so someone texting "I can't get in" is still told the
-  // room is open rather than being sent to next week.
+  // No special handling for a session in progress: contacts are removed from
+  // the messaging workflow once the final message goes out, so nobody is
+  // texting the bot from inside one.
   const cutoff = new Date(Date.now() - webinarSync.CUTOVER_MIN * 60 * 1000);
   for (const iso of scheduleStore.getScheduleISO()) {
     const d = new Date(iso);
@@ -71,44 +71,6 @@ function getWorkshopDate() {
   }
   console.warn("Workshop schedule exhausted — falling back to next Saturday");
   return nextSaturdayAt9amPT();
-}
-
-// The workshop currently in progress, if any: started within the last two
-// hours. Deliberately independent of getWorkshopDate() — once we roll forward
-// at +30, the in-progress session is no longer "the" workshop, but the bot
-// still has to answer people trying to join it.
-function getLiveWorkshop() {
-  const now = Date.now();
-  for (const iso of scheduleStore.getScheduleISO()) {
-    const started = now - new Date(iso).getTime();
-    if (started >= 0 && started <= 120 * 60 * 1000) return new Date(iso);
-  }
-  return null;
-}
-
-// ─── Workshop time labels ────────────────────────────────────────────────────
-// Every workshop time in the prompt is derived from the scheduled instant.
-// These were hardcoded to 9am, which was true until the schedule started
-// carrying 3pm and 4pm sessions — at which point the bot confidently told
-// registrants the wrong hour.
-
-function clockIn(date, tz) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true,
-  }).formatToParts(date);
-  const get = (t) => parts.find((x) => x.type === t)?.value ?? "";
-  const period = get("dayPeriod").toLowerCase().replace(/[\s.]/g, "");
-  const minute = get("minute");
-  return minute === "00" ? `${get("hour")}${period}` : `${get("hour")}:${minute}${period}`;
-}
-
-/** "3pm" — Pacific, the house default for talking about times. */
-function ptLabel(date) { return clockIn(date, "America/Los_Angeles"); }
-
-/** "3pm PT (4pm MT / 5pm CT / 6pm ET)" */
-function allZonesLabel(date) {
-  return `${ptLabel(date)} PT (${clockIn(date, "America/Denver")} MT / ` +
-         `${clockIn(date, "America/Chicago")} CT / ${clockIn(date, "America/New_York")} ET)`;
 }
 
 // ─── System prompt ───────────────────────────────────────────────────────────
@@ -166,16 +128,11 @@ async function buildSystemPrompt(mockNow = null, mockMakeupISO = null, mockWorks
   const daysUntil = Math.round(minutesUntil / 60 / 24);
 
   // Time context — explicit state description.
-  // A session in progress takes precedence: by this point workshopTime is
-  // already the NEXT workshop, so minutesUntil says nothing about the room
-  // that is open right now.
-  const liveWorkshop = mockNow ? null : getLiveWorkshop();
-  const liveMinutesIn = liveWorkshop ? Math.round((now - liveWorkshop) / 60000) : null;
-
+  // Past the 30-minute cutover workshopTime is already the NEXT workshop, so
+  // the LIVE branch below only ever describes the first half hour — which is
+  // the entire live window the bot needs.
   let timeContext;
-  if (liveWorkshop) {
-    timeContext = `A workshop is LIVE RIGHT NOW — it started ${liveMinutesIn} minutes ago. Anyone asking how to join should be helped into the room. The next workshop we are promoting to new signups is ${workshopDateLabel}.`;
-  } else if (minutesUntil <= 0 && minutesUntil > -120) {
+  if (minutesUntil <= 0 && minutesUntil > -120) {
     timeContext = `The workshop is LIVE RIGHT NOW.`;
   } else if (minutesUntil <= -120) {
     timeContext = `The workshop has already ended today.`;
@@ -191,9 +148,7 @@ async function buildSystemPrompt(mockNow = null, mockMakeupISO = null, mockWorks
 
   // Precompute sign-off phrase — LLM must use this exactly, not guess
   let signOffInstruction;
-  if (liveWorkshop) {
-    signOffInstruction = `SIGN-OFF: A workshop is live right now — do NOT use "see you" language about it.`;
-  } else if (minutesUntil <= 0) {
+  if (minutesUntil <= 0) {
     signOffInstruction = `SIGN-OFF: The workshop is live or has ended — do NOT use "see you" language.`;
   } else if (minutesUntil <= 120) {
     signOffInstruction = `SIGN-OFF: Use "see you soon! 🙌🏼" — workshop starts in about ${minutesUntil} minutes. Do NOT mention the specific time.`;
