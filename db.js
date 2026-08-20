@@ -51,6 +51,7 @@ const SELECT_COLUMNS = `
   invite_sent_at,
   invite_sequence,
   google_event_id,
+  google_event_sig,
   zoom_link,
   zoom_webinar_id,
   updated_by,
@@ -109,7 +110,8 @@ export async function initSchema() {
     // the sync detects and recreates.
     await client.query(`
       ALTER TABLE workshops
-        ADD COLUMN IF NOT EXISTS google_event_id TEXT
+        ADD COLUMN IF NOT EXISTS google_event_id TEXT,
+        ADD COLUMN IF NOT EXISTS google_event_sig TEXT
     `);
     // Small key/value store for things the team edits in the app rather than
     // in Railway — starting with who gets calendar invites. A settings row
@@ -275,8 +277,11 @@ export async function clearEventIds() {
   await getPool().query(`UPDATE workshops SET google_event_id = NULL WHERE google_event_id IS NOT NULL`);
 }
 
-export async function setEventId(id, eventId) {
-  await getPool().query(`UPDATE workshops SET google_event_id = $2 WHERE id = $1`, [id, eventId]);
+export async function setEventId(id, eventId, sig = null) {
+  await getPool().query(
+    `UPDATE workshops SET google_event_id = $2, google_event_sig = $3 WHERE id = $1`,
+    [id, eventId, sig]
+  );
 }
 
 export async function markInvited(id, sequence) {

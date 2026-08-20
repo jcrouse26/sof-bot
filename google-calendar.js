@@ -22,6 +22,9 @@ const TOKEN = "https://oauth2.googleapis.com/token";
 const API = "https://www.googleapis.com/calendar/v3";
 const TZ = "America/Los_Angeles";
 
+import { createHash } from "node:crypto";
+const hash = (v) => createHash("sha1").update(JSON.stringify(v)).digest("hex").slice(0, 16);
+
 const SCOPES = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/calendar.readonly",
@@ -123,7 +126,12 @@ function eventFor(workshop, attendees) {
   const end = new Date(start.getTime() + DURATION_MIN * 60_000);
   const iso = (d) => d.toISOString().replace(/\.\d{3}Z$/, "Z");
   return {
-    summary: workshop.edition ? `${TITLE} #${workshop.edition}` : TITLE,
+    // No edition number in the title. Editions re-sequence whenever a date is
+    // added or cancelled, so carrying one here meant a single cancellation
+    // re-titled every later event — churn on three calendars for a number
+    // nobody reads there. The number still matters where it is load-bearing:
+    // the GHL registration tag.
+    summary: TITLE,
     description: [
       workshop.zoom_link ? `Zoom: ${workshop.zoom_link}` : "Zoom room not set yet.",
       workshop.note ? `Note: ${workshop.note}` : null,
@@ -190,8 +198,17 @@ export async function syncEvents({ listWorkshops, setEventId, refreshToken, cale
 
       const wanted = eventIdFor(w.id);
       const body = eventFor(w, attendees);
+
+      // Two fingerprints: the whole event, and just the parts a guest would
+      // want an email about. Without this the loop PATCHed all 25 events every
+      // 60 seconds forever.
+      const guestFacing = { start: body.start, end: body.end, location: body.location, attendees: body.attendees };
+      const sig = hash(body) + "." + hash(guestFacing);
+      if (hasEvent && w.google_event_sig === sig) continue;
+      const guestsCare = !w.google_event_sig || w.google_event_sig.split(".")[1] !== hash(guestFacing);
+      const sendUpdates = guestsCare ? "all" : "none";
       const url = hasEvent
-        ? `${API}/calendars/${cal}/events/${w.google_event_id}?sendUpdates=all`
+        ? `${API}/calendars/${cal}/events/${w.google_event_id}?sendUpdates=${sendUpdates}`
         : `${API}/calendars/${cal}/events?sendUpdates=all`;
       const res = await fetch(url, {
         method: hasEvent ? "PATCH" : "POST",
@@ -202,7 +219,7 @@ export async function syncEvents({ listWorkshops, setEventId, refreshToken, cale
       // 409 means this workshop's event already exists — another pass won the
       // race, or it is left over from before. Adopt it instead of inserting.
       if (!hasEvent && res.status === 409) {
-        await setEventId(w.id, wanted);
+        await setEventId(w.id, wanted, sig);
         changed.push({ id: w.id, action: "adopted existing event" });
         continue;
       }
@@ -217,10 +234,12 @@ export async function syncEvents({ listWorkshops, setEventId, refreshToken, cale
       if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 160)}`);
 
       const created = await res.json();
-      if (!hasEvent) {
-        await setEventId(w.id, created.id || wanted);
-        changed.push({ id: w.id, action: "created", when: `${w.local_date} ${w.local_time}` });
-      }
+      await setEventId(w.id, hasEvent ? w.google_event_id : (created.id || wanted), sig);
+      changed.push({
+        id: w.id,
+        action: hasEvent ? (guestsCare ? "updated (guests notified)" : "updated quietly") : "created",
+        when: `${w.local_date} ${w.local_time}`,
+      });
     } catch (err) {
       await notify(`🛑 *Google Calendar sync failed* for ${w.local_date}: ${err.message}`);
       return finish("error", err.message, { changed });
